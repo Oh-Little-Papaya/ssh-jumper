@@ -4,22 +4,50 @@
 
 ## 1) 安装与编译
 
+先安装系统依赖（含 Folly 构建依赖）：
+
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-  cmake build-essential ninja-build pkg-config \
-  libssh-dev libssl-dev
+  build-essential ca-certificates cmake git ninja-build pkg-config \
+  libboost-all-dev libevent-dev libdouble-conversion-dev \
+  libgflags-dev libgoogle-glog-dev libgtest-dev libssl-dev \
+  libunwind-dev libfmt-dev libsodium-dev libzstd-dev liblz4-dev \
+  libsnappy-dev libjemalloc-dev zlib1g-dev libbz2-dev liblzma-dev \
+  libssh-dev
 ```
+
+安装 Folly（必选）：
+
+```bash
+git clone --depth 1 --branch v2024.08.19.00 https://github.com/facebook/folly.git
+cmake -S folly -B folly/build \
+  -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INSTALL_PREFIX=/usr/local \
+  -DBUILD_TESTS=OFF \
+  -DBUILD_BENCHMARKS=OFF \
+  -DBUILD_EXAMPLES=OFF \
+  -DBUILD_SHARED_LIBS=ON
+cmake --build folly/build -j"$(nproc)"
+sudo cmake --install folly/build
+sudo ldconfig
+rm -rf folly
+```
+
+编译项目：
 
 ```bash
 git clone <repository-url>
 cd ssh-jumper
-cmake -S . -B build -G Ninja -DENABLE_FOLLY=ON
+cmake -S . -B build -G Ninja -DENABLE_FOLLY=ON -DCMAKE_PREFIX_PATH=/usr/local
 cmake --build build -j"$(nproc)"
 ```
 
-说明:
-- Folly 为必选依赖，`ENABLE_FOLLY=ON` 缺失或 Folly 未安装会直接编译失败。
+说明：
+- Folly 为必选依赖，`ENABLE_FOLLY=ON` 且找不到 Folly 会直接失败。
+- 若系统缺少 `libgflags_shared.so`，可执行：
+  `sudo ln -sf /usr/lib/x86_64-linux-gnu/libgflags.so /usr/lib/x86_64-linux-gnu/libgflags_shared.so`
 
 ## 2) 启动 jump-server
 
