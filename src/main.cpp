@@ -88,7 +88,10 @@ bool daemonize() {
         exit(0);
     }
     
-    chdir("/");
+    if (chdir("/") < 0) {
+        LOG_ERROR("Failed to change working directory to /: " + std::string(strerror(errno)));
+        return false;
+    }
 
     close(STDIN_FILENO);
     close(STDOUT_FILENO);

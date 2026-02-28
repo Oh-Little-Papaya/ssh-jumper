@@ -48,19 +48,19 @@ show_menu() {
 # 启动环境
 start_env() {
     log_info "启动 Docker 环境..."
-    docker-compose up -d --build
+    docker compose up -d --build
     log_info "等待服务就绪 (10秒)..."
     sleep 10
     log_success "环境已启动"
     echo ""
-    docker-compose ps
+    docker compose ps
     read -p "按回车键继续..."
 }
 
 # 停止环境
 stop_env() {
     log_info "停止 Docker 环境..."
-    docker-compose down -v
+    docker compose down -v
     log_success "环境已停止"
     read -p "按回车键继续..."
 }
@@ -68,7 +68,7 @@ stop_env() {
 # 查看状态
 show_status() {
     log_info "服务状态:"
-    docker-compose ps
+    docker compose ps
     echo ""
     log_info "网络信息:"
     docker network inspect ssh-jumper_jump-network 2>/dev/null | grep -A5 '"Containers":' || echo "网络未创建"
@@ -78,7 +78,7 @@ show_status() {
 # 查看日志
 show_logs() {
     log_info "服务器日志 (按 Ctrl+C 退出):"
-    docker-compose logs -f --tail=50 jump-server
+    docker compose logs -f --tail=50 jump-server
 }
 
 # 测试交互式连接
@@ -103,7 +103,7 @@ test_connect() {
 # 进入测试容器
 enter_container() {
     log_info "进入测试容器..."
-    docker-compose exec test-client sh
+    docker compose exec jump-client sh
 }
 
 # 运行自动化测试

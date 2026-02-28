@@ -62,13 +62,26 @@ find_package(OpenSSL REQUIRED)
 option(ENABLE_FOLLY "Enable Folly-based performance optimizations" ON)
 set(FOLLY_ENABLED FALSE)
 set(FOLLY_USING_TARGET FALSE)
+set(FOLLY_TARGET_NAME "")
 if(ENABLE_FOLLY)
     find_package(folly CONFIG QUIET)
     if(folly_FOUND)
-        set(FOLLY_ENABLED TRUE)
-        set(FOLLY_USING_TARGET TRUE)
-        message(STATUS "Folly found via CMake package")
-    else()
+        if(TARGET Folly::folly)
+            set(FOLLY_TARGET_NAME Folly::folly)
+        elseif(TARGET folly::folly)
+            set(FOLLY_TARGET_NAME folly::folly)
+        endif()
+
+        if(FOLLY_TARGET_NAME)
+            set(FOLLY_ENABLED TRUE)
+            set(FOLLY_USING_TARGET TRUE)
+            message(STATUS "Folly found via CMake package target: ${FOLLY_TARGET_NAME}")
+        else()
+            message(WARNING "Folly package found but no imported target exported, fallback to pkg-config")
+        endif()
+    endif()
+
+    if(NOT FOLLY_ENABLED)
         pkg_check_modules(FOLLY QUIET folly)
         if(FOLLY_FOUND)
             set(FOLLY_ENABLED TRUE)
@@ -128,16 +141,17 @@ set(COMMON_SOURCES
 # 创建静态库
 add_library(sshjump_static STATIC ${COMMON_SOURCES})
 target_link_libraries(sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
-    nlohmann_json::nlohmann_json
+    PUBLIC
+        ${LIBSSH_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        Threads::Threads
+        nlohmann_json::nlohmann_json
 )
 
 if(FOLLY_ENABLED)
     target_compile_definitions(sshjump_static PUBLIC SSHJUMP_USE_FOLLY)
     if(FOLLY_USING_TARGET)
-        target_link_libraries(sshjump_static PUBLIC folly::folly)
+        target_link_libraries(sshjump_static PUBLIC ${FOLLY_TARGET_NAME})
     else()
         if(FOLLY_INCLUDE_DIRS)
             target_include_directories(sshjump_static PUBLIC ${FOLLY_INCLUDE_DIRS})
@@ -150,7 +164,7 @@ if(FOLLY_ENABLED)
 endif()
 
 if(HAS_IO_URING)
-    target_link_libraries(sshjump_static ${IO_URING_LIB})
+    target_link_libraries(sshjump_static PUBLIC ${IO_URING_LIB})
 endif()
 
 # SSH 服务器可执行文件
@@ -197,6 +211,25 @@ target_link_libraries(ssh_jump_node_tool
 
 # 单元测试
 enable_testing()
+
+# 性能基准测试（用于 Folly ON/OFF 对比）
+add_executable(ssh_jump_perf_bench tests/benchmark_forward_executor.cpp)
+target_link_libraries(ssh_jump_perf_bench PRIVATE Threads::Threads)
+
+if(FOLLY_ENABLED)
+    target_compile_definitions(ssh_jump_perf_bench PRIVATE SSHJUMP_USE_FOLLY)
+    if(FOLLY_USING_TARGET)
+        target_link_libraries(ssh_jump_perf_bench PRIVATE ${FOLLY_TARGET_NAME})
+    else()
+        if(FOLLY_INCLUDE_DIRS)
+            target_include_directories(ssh_jump_perf_bench PRIVATE ${FOLLY_INCLUDE_DIRS})
+        endif()
+        if(FOLLY_LIBRARY_DIRS)
+            target_link_directories(ssh_jump_perf_bench PRIVATE ${FOLLY_LIBRARY_DIRS})
+        endif()
+        target_link_libraries(ssh_jump_perf_bench PRIVATE ${FOLLY_LIBRARIES})
+    endif()
+endif()
 
 # 单元测试源文件
 set(UNIT_TEST_SOURCES

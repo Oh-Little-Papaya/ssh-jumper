@@ -17,6 +17,7 @@ NC='\033[0m'
 
 FAILED=0
 COMPOSE="docker compose"
+KEEP_TEST_ENV="${KEEP_TEST_ENV:-0}"
 
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
@@ -55,6 +56,15 @@ cleanup() {
     docker rm -f jump-server web-server-01 api-server-01 db-server-01 cache-server-01 jump-client 2>/dev/null || true
     docker rmi -f ssh-jump-server ssh-jump-agent ssh-jump-client 2>/dev/null || true
     log_pass "清理完成"
+}
+
+cleanup_on_exit() {
+    if [ "$KEEP_TEST_ENV" = "1" ]; then
+        log_warn "KEEP_TEST_ENV=1，跳过测试后清理"
+        return
+    fi
+    log_info "测试结束，自动清理环境..."
+    cleanup || true
 }
 
 build_images() {
@@ -265,6 +275,7 @@ print_summary() {
 
 main() {
     require_compose
+    trap cleanup_on_exit EXIT
     cleanup
     build_images
     start_services

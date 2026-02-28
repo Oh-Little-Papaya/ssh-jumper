@@ -77,7 +77,7 @@
 
 ```bash
 # 启动所有服务（跳板机 + 4个Agent + 测试客户端）
-docker-compose up -d
+docker compose up -d
 
 # 等待服务启动（约10秒）
 sleep 10
@@ -87,7 +87,7 @@ docker exec -it jump-client ssh -p 2222 admin@jump-server
 # 密码: admin123
 
 # 查看所有容器状态
-docker-compose ps
+docker compose ps
 ```
 
 **测试用户账号：**
@@ -112,11 +112,20 @@ sudo yum install -y cmake gcc-c++ libssh-devel openssl-devel pkgconfig
 git clone <repository-url>
 cd ssh-jumper
 mkdir build && cd build
-cmake ..
+
+# 默认启用 Folly 优化
+cmake -DENABLE_FOLLY=ON ..
 make -j$(nproc)
 
 # 安装（可选）
 sudo make install
+```
+
+如果本机未安装 Folly，可关闭 Folly 优化继续编译：
+
+```bash
+cmake -DENABLE_FOLLY=OFF ..
+make -j$(nproc)
 ```
 
 ## 配置说明
@@ -360,17 +369,17 @@ logout
 
 ```bash
 # 启动所有服务
-docker-compose up -d
+docker compose up -d
 
 # 查看日志
-docker-compose logs -f jump-server
+docker compose logs -f jump-server
 
 # 停止服务
-docker-compose down
+docker compose down
 
 # 重新构建
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 **Docker 环境包含：**
@@ -397,6 +406,15 @@ ctest --output-on-failure
 
 # Docker 环境自动化测试
 docker exec jump-client /usr/local/bin/client-test.sh auto
+
+# 端到端自动化测试（自动清理环境）
+./docker/test.sh
+
+# 保留测试环境用于排查
+KEEP_TEST_ENV=1 ./docker/test.sh
+
+# Folly ON/OFF 对比基准（自动清理构建镜像）
+./docker/perf-compare.sh
 ```
 
 ## 系统要求

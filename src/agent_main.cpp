@@ -79,15 +79,22 @@ bool daemonize() {
         exit(0);
     }
     
-    chdir("/");
+    if (chdir("/") < 0) {
+        LOG_ERROR("Failed to change working directory to /: " + std::string(strerror(errno)));
+        return false;
+    }
     
     close(STDIN_FILENO);
     close(STDOUT_FILENO);
     close(STDERR_FILENO);
     
-    open("/dev/null", O_RDONLY);
-    open("/dev/null", O_WRONLY);
-    open("/dev/null", O_WRONLY);
+    const int fd0 = open("/dev/null", O_RDONLY);
+    const int fd1 = open("/dev/null", O_WRONLY);
+    const int fd2 = open("/dev/null", O_WRONLY);
+    if (fd0 < 0 || fd1 < 0 || fd2 < 0) {
+        LOG_ERROR("Failed to redirect standard streams");
+        return false;
+    }
     
     return true;
 }

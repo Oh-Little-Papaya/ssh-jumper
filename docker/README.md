@@ -260,7 +260,14 @@ docker exec -it jump-client bash
 
 ```bash
 # 一键执行完整 E2E（构建 + 启动 + 认证/权限/会话/子节点 CRUD）
+# 默认在退出时自动清理容器与网络
 ./docker/test.sh
+
+# 保留测试环境用于调试（不自动清理）
+KEEP_TEST_ENV=1 ./docker/test.sh
+
+# 强制无缓存构建
+NO_CACHE_BUILD=1 ./docker/test.sh
 
 # 仅运行客户端自动化测试
 docker exec jump-client /usr/local/bin/client-test.sh auto
@@ -268,6 +275,19 @@ docker exec jump-client /usr/local/bin/client-test.sh auto
 # 或手动测试
 docker exec -it jump-client bash
 /usr/local/bin/client-test.sh
+```
+
+### Folly ON/OFF 性能对比
+
+```bash
+# 在 Docker builder 镜像中对比 Folly 开关性能
+./docker/perf-compare.sh
+
+# 自定义参数
+TASKS=50000 WORK=300 ROUNDS=7 ./docker/perf-compare.sh
+
+# 保留对比镜像与构建缓存
+KEEP_ARTIFACTS=1 ./docker/perf-compare.sh
 ```
 
 ### 子节点管理（CRUD）

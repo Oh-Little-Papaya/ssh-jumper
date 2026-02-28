@@ -17,9 +17,10 @@ sudo apt-get install -y cmake build-essential libssh-dev libssl-dev pkg-config
 
 # 克隆并编译
 git clone <repository-url>
-cd ssh_jump_server
+cd ssh-jumper
 mkdir build && cd build
-cmake ..
+# 默认启用 Folly 优化
+cmake -DENABLE_FOLLY=ON ..
 make -j$(nproc)
 
 # 安装到系统

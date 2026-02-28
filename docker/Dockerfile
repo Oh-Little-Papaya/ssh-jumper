@@ -2,21 +2,70 @@
 # 三个角色：Server、Agent、Client
 
 # ============================================
-# 构建阶段
+# Folly 构建阶段（源码编译）
 # ============================================
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:22.04 AS folly-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG FOLLY_TAG=v2024.08.19.00
 
-# 安装编译依赖
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
     cmake \
-    pkg-config \
-    libssh-dev \
-    libssl-dev \
     git \
-    && (apt-get install -y libfolly-dev || echo "[WARN] libfolly-dev not available, fallback to std mode") \
+    ninja-build \
+    pkg-config \
+    libboost-all-dev \
+    libevent-dev \
+    libdouble-conversion-dev \
+    libgflags-dev \
+    libgoogle-glog-dev \
+    libgtest-dev \
+    libssl-dev \
+    libunwind-dev \
+    libfmt-dev \
+    libsodium-dev \
+    libzstd-dev \
+    liblz4-dev \
+    libsnappy-dev \
+    libjemalloc-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    && if [ -f /usr/lib/x86_64-linux-gnu/libgflags.so ] && [ ! -e /usr/lib/x86_64-linux-gnu/libgflags_shared.so ]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libgflags.so /usr/lib/x86_64-linux-gnu/libgflags_shared.so; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /tmp
+RUN git clone --depth 1 --branch "${FOLLY_TAG}" https://github.com/facebook/folly.git
+
+WORKDIR /tmp/folly
+RUN cmake -S . -B build \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr/local \
+    -DBUILD_TESTS=OFF \
+    -DBUILD_BENCHMARKS=OFF \
+    -DBUILD_EXAMPLES=OFF \
+    -DBUILD_SHARED_LIBS=ON && \
+    cmake --build build -j"$(nproc)" && \
+    cmake --install build && \
+    ldconfig && \
+    rm -rf /tmp/folly
+
+# ============================================
+# 项目构建阶段
+# ============================================
+FROM folly-builder AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/local/share/pkgconfig
+ARG PROJECT_ENABLE_FOLLY=ON
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssh-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制源代码
@@ -24,25 +73,61 @@ WORKDIR /build
 COPY . .
 
 # 编译项目（Release 模式）
-RUN rm -rf build && mkdir -p build && cd build && \
-    cmake -DCMAKE_BUILD_TYPE=Release -DENABLE_FOLLY=ON .. && \
-    make -j$(nproc)
+RUN if [ -f /usr/lib/x86_64-linux-gnu/libgflags.so ] && [ ! -e /usr/lib/x86_64-linux-gnu/libgflags_shared.so ]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libgflags.so /usr/lib/x86_64-linux-gnu/libgflags_shared.so; \
+    fi && \
+    rm -rf build && mkdir -p build && cd build && \
+    cmake -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DENABLE_FOLLY=${PROJECT_ENABLE_FOLLY} \
+      -DCMAKE_PREFIX_PATH=/usr/local \
+      .. 2>&1 | tee /tmp/cmake.log && \
+    if [ "${PROJECT_ENABLE_FOLLY}" = "ON" ]; then \
+      grep -Eq "Folly found via CMake package|Folly found via pkg-config" /tmp/cmake.log && \
+      ! grep -q "ENABLE_FOLLY=ON but Folly not found" /tmp/cmake.log; \
+    fi && \
+    cmake --build . -j"$(nproc)"
+
+# ============================================
+# 运行时基础镜像（包含 Folly 运行依赖）
+# ============================================
+FROM ubuntu:22.04 AS runtime-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libboost-all-dev \
+    libdouble-conversion3 \
+    libevent-2.1-7 \
+    libfmt8 \
+    libgflags2.2 \
+    libgoogle-glog0v5 \
+    libjemalloc2 \
+    liblz4-1 \
+    liblzma5 \
+    libsodium23 \
+    libsnappy1v5 \
+    libssh-4 \
+    libssl3 \
+    libunwind8 \
+    libzstd1 \
+    netcat-openbsd \
+    openssh-client \
+    zlib1g \
+    libbz2-1.0 \
+    && if [ -f /usr/lib/x86_64-linux-gnu/libgflags.so ] && [ ! -e /usr/lib/x86_64-linux-gnu/libgflags_shared.so ]; then \
+        ln -s /usr/lib/x86_64-linux-gnu/libgflags.so /usr/lib/x86_64-linux-gnu/libgflags_shared.so; \
+    fi \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=folly-builder /usr/local/ /usr/local/
+RUN ldconfig
 
 # ============================================
 # Server 运行阶段
 # ============================================
-FROM ubuntu:22.04 AS server
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 安装运行依赖
-RUN apt-get update && apt-get install -y \
-    libssh-4 \
-    libssl3 \
-    openssh-client \
-    netcat-openbsd \
-    && (apt-get install -y libfolly-dev || true) \
-    && rm -rf /var/lib/apt/lists/*
+FROM runtime-base AS server
 
 # 创建运行用户和目录
 RUN groupadd -r sshjump && \
@@ -54,8 +139,8 @@ COPY --from=builder /build/build/ssh_jump_server /opt/ssh_jump/
 COPY --from=builder /build/build/ssh_jump_node_tool /opt/ssh_jump/
 RUN chmod +x /opt/ssh_jump/ssh_jump_server && \
     chmod +x /opt/ssh_jump/ssh_jump_node_tool && \
-    ln -sf /opt/ssh_jump/ssh_jump_server /usr/local/bin/
-RUN ln -sf /opt/ssh_jump/ssh_jump_node_tool /usr/local/bin/
+    ln -sf /opt/ssh_jump/ssh_jump_server /usr/local/bin/ && \
+    ln -sf /opt/ssh_jump/ssh_jump_node_tool /usr/local/bin/
 
 # 复制默认配置
 COPY docker/server-config/ /etc/ssh_jump/
@@ -73,18 +158,13 @@ ENTRYPOINT ["/usr/local/bin/start-server.sh"]
 # ============================================
 # Agent 运行阶段
 # ============================================
-FROM ubuntu:22.04 AS agent
+FROM runtime-base AS agent
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# 安装运行依赖和 SSH 服务（用于模拟目标服务器）
-RUN apt-get update && apt-get install -y \
-    libssh-4 \
-    libssl3 \
+# 安装 SSH 服务（用于模拟目标服务器）
+RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     iputils-ping \
     net-tools \
-    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # 配置 SSH 服务（用于模拟目标服务器）

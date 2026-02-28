@@ -123,7 +123,7 @@ child_nodes_file = /etc/ssh_jump/child_nodes.conf
 # /etc/ssh_jump/users.conf
 
 # 管理员
-admin = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c7209
+admin = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9
 
 # 开发者
 developer = ef92b778bafe771e89245b89ecbc08a44a4e166c06659911881f383d4473e94f

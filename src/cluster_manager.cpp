@@ -13,7 +13,6 @@
 
 #ifdef SSHJUMP_USE_FOLLY
 #include <folly/executors/CPUThreadPoolExecutor.h>
-#include <folly/executors/NamedThreadFactory.h>
 #endif
 
 namespace sshjump {
@@ -233,9 +232,7 @@ void bridgeSocketPair(int leftFd, int rightFd) {
 void submitForwardTask(std::function<void()> task) {
 #ifdef SSHJUMP_USE_FOLLY
     static std::shared_ptr<folly::CPUThreadPoolExecutor> executor = []() {
-        auto ex = std::make_shared<folly::CPUThreadPoolExecutor>(
-            4,
-            std::make_shared<folly::NamedThreadFactory>("agent-forward"));
+        auto ex = std::make_shared<folly::CPUThreadPoolExecutor>(4);
         LOG_INFO("Forward task executor initialized with Folly CPUThreadPoolExecutor");
         return ex;
     }();
@@ -507,14 +504,14 @@ void AgentConnection::handleRegister(const std::string& payload) {
     }
 }
 
-void AgentConnection::handleHeartbeat(const std::string& payload) {
+void AgentConnection::handleHeartbeat(const std::string& /*payload*/) {
     if (!agentId_.empty()) {
         manager_->updateHeartbeat(agentId_);
     }
     sendResponse(true, "Heartbeat received");
 }
 
-void AgentConnection::handleUnregister(const std::string& payload) {
+void AgentConnection::handleUnregister(const std::string& /*payload*/) {
     if (!agentId_.empty()) {
         manager_->unregisterAgent(agentId_);
     }

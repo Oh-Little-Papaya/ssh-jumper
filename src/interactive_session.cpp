@@ -1019,6 +1019,8 @@ void InteractiveSession::sendToUser(const std::string& data) {
 }
 
 void InteractiveSession::recordRecentAccess(const std::string& assetId, const std::string& hostname) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     // 检查是否已存在
     for (auto& recent : recentAssets_) {
         if (recent.assetId == assetId) {
@@ -1043,9 +1045,13 @@ void InteractiveSession::recordRecentAccess(const std::string& assetId, const st
 }
 
 std::vector<RecentAsset> InteractiveSession::getRecentAssets(int limit) {
-    // TODO: 从文件加载持久化的最近访问记录
-    // 暂时返回空列表
-    return {};
+    if (limit <= 0) {
+        return {};
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t count = std::min(static_cast<size_t>(limit), recentAssets_.size());
+    return std::vector<RecentAsset>(recentAssets_.begin(), recentAssets_.begin() + count);
 }
 
 void InteractiveSession::showEmptyAssetMenu() {
