@@ -8,6 +8,7 @@ SERVER_HOST="${SERVER_HOST:-jump-server}"
 SERVER_PORT="${SERVER_PORT:-8888}"
 AGENT_HOSTNAME="${AGENT_HOSTNAME:-$AGENT_ID}"
 SSH_PORT="${SSH_PORT:-22}"
+AGENT_IP="${AGENT_IP:-}"
 
 echo "========================================"
 echo "  SSH Jump Agent - Docker"
@@ -33,23 +34,6 @@ else
     exit 1
 fi
 
-# 创建 Agent 配置文件
-mkdir -p /etc/ssh_jump
-cat > /etc/ssh_jump/agent.conf << EOF
-[server]
-address = $SERVER_HOST
-port = $SERVER_PORT
-
-[agent]
-id = $AGENT_ID
-token = $AGENT_TOKEN
-hostname = $AGENT_HOSTNAME
-
-[service]
-expose = ssh:ssh:$SSH_PORT
-EOF
-
-echo "[INFO] 配置文件已创建"
 echo "[INFO] 等待服务器就绪..."
 
 # 等待服务器就绪（带重试）
@@ -68,4 +52,19 @@ echo "[INFO] 启动 SSH Jump Agent..."
 echo "========================================"
 
 # 启动 Agent
-exec /opt/ssh_jump/ssh_jump_agent -c /etc/ssh_jump/agent.conf -v
+AGENT_CMD=(
+    /opt/ssh_jump/ssh_jump_agent
+    -s "$SERVER_HOST"
+    -p "$SERVER_PORT"
+    -i "$AGENT_ID"
+    -t "$AGENT_TOKEN"
+    -n "$AGENT_HOSTNAME"
+    -S "ssh:ssh:$SSH_PORT"
+    -v
+)
+
+if [ -n "$AGENT_IP" ]; then
+    AGENT_CMD+=(-I "$AGENT_IP")
+fi
+
+exec "${AGENT_CMD[@]}"

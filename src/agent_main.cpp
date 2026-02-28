@@ -7,7 +7,6 @@
 
 #include "common.h"
 #include "cluster_manager.h"
-#include "config_manager.h"
 
 #include <getopt.h>
 
@@ -33,7 +32,6 @@ void printUsage(const char* program) {
               << "  -n, --hostname <name>   Hostname to register\n"
               << "  -I, --ip <ip>           Local IP address to report (auto-detect if not set)\n"
               << "  -S, --service <spec>    Service to expose (format: name:type:port)\n"
-              << "  -c, --config <path>     Configuration file\n"
               << "  -d, --daemon            Run as daemon\n"
               << "  -v, --verbose           Verbose output\n"
               << "  -h, --help              Show this help message\n"
@@ -41,7 +39,7 @@ void printUsage(const char* program) {
               << "\nExamples:\n"
               << "  " << program << " -s jump.example.com -t mysecrettoken -S ssh:ssh:22\n"
               << "  " << program << " -s 192.168.1.100 -p 8888 -i web-01 -t token -I 192.168.1.10 -S web:http:80\n"
-              << "  " << program << " -c /etc/ssh_jump/agent.conf -d\n";
+              << "  " << program << " -s jump.example.com -t token -d\n";
 }
 
 // 打印版本信息
@@ -99,78 +97,6 @@ bool daemonize() {
     return true;
 }
 
-// 从配置文件加载
-bool loadConfig(const std::string& path, 
-                std::string& serverAddr, 
-                int& serverPort,
-                std::string& agentId,
-                std::string& authToken,
-                std::string& hostname,
-                std::string& localIp,
-                std::vector<ServiceInfo>& services) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        LOG_ERROR("Failed to open config file: " + path);
-        return false;
-    }
-    
-    std::string line;
-    std::string currentSection;
-    
-    while (std::getline(file, line)) {
-        line = trimString(line);
-        
-        if (line.empty() || line[0] == '#' || line[0] == ';') {
-            continue;
-        }
-        
-        if (line[0] == '[' && line[line.size() - 1] == ']') {
-            currentSection = line.substr(1, line.size() - 2);
-            continue;
-        }
-        
-        size_t pos = line.find('=');
-        if (pos == std::string::npos) {
-            continue;
-        }
-        
-        std::string key = trimString(line.substr(0, pos));
-        std::string value = trimString(line.substr(pos + 1));
-        
-        if (value.size() >= 2 && value[0] == '"' && value[value.size() - 1] == '"') {
-            value = value.substr(1, value.size() - 2);
-        }
-        
-        if (currentSection == "server") {
-            if (key == "address") serverAddr = value;
-            else if (key == "port") serverPort = safeStringToInt(value, DEFAULT_CLUSTER_PORT);
-        }
-        else if (currentSection == "agent") {
-            if (key == "id") agentId = value;
-            else if (key == "token") authToken = value;
-            else if (key == "hostname") hostname = value;
-            else if (key == "ip") localIp = value;
-        }
-        else if (currentSection == "service" && key == "expose") {
-            // 解析服务规格: name:type:port[:description]
-            auto parts = splitString(value, ':');
-            if (parts.size() >= 3) {
-                ServiceInfo service;
-                service.name = parts[0];
-                service.type = parts[1];
-                service.port = safeStringToInt(parts[2], 22);
-                if (parts.size() > 3) {
-                    service.description = parts[3];
-                }
-                services.push_back(service);
-            }
-        }
-    }
-    
-    file.close();
-    return true;
-}
-
 // 解析服务规格
 bool parseServiceSpec(const std::string& spec, ServiceInfo& service) {
     auto parts = splitString(spec, ':');
@@ -199,7 +125,6 @@ int main(int argc, char* argv[]) {
     std::string hostname;
     std::string localIp;
     std::vector<ServiceInfo> services;
-    std::string configPath;
     bool runAsDaemon = false;
     bool verbose = false;
     
@@ -212,7 +137,6 @@ int main(int argc, char* argv[]) {
         {"hostname", required_argument, nullptr, 'n'},
         {"ip", required_argument, nullptr, 'I'},
         {"service", required_argument, nullptr, 'S'},
-        {"config", required_argument, nullptr, 'c'},
         {"daemon", no_argument, nullptr, 'd'},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
@@ -221,7 +145,7 @@ int main(int argc, char* argv[]) {
     };
     
     int opt;
-    while ((opt = getopt_long(argc, argv, "s:p:i:t:n:I:S:c:dvhV", longOptions, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "s:p:i:t:n:I:S:dvhV", longOptions, nullptr)) != -1) {
         switch (opt) {
             case 's':
                 serverAddr = optarg;
@@ -255,9 +179,6 @@ int main(int argc, char* argv[]) {
                 }
                 break;
             }
-            case 'c':
-                configPath = optarg;
-                break;
             case 'd':
                 runAsDaemon = true;
                 break;
@@ -284,13 +205,6 @@ int main(int argc, char* argv[]) {
     // 打印版本信息
     printVersion();
     std::cout << std::endl;
-    
-    // 加载配置文件
-    if (!configPath.empty()) {
-        if (!loadConfig(configPath, serverAddr, serverPort, agentId, authToken, hostname, localIp, services)) {
-            LOG_WARN("Failed to load config file: " + configPath);
-        }
-    }
     
     // 验证必需参数
     if (serverAddr.empty()) {
