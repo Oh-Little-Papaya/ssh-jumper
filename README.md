@@ -89,34 +89,34 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 ## 5) 命令行参数
 
 `ssh_jump_server` 常用参数:
-- `-p, --port`
-- `-a, --agent-port`
-- `--listen-address`
-- `--cluster-listen-address`
-- `--host-key-path`
-- `--users-file`
-- `--agent-token-file`
-- `--permissions-file`
-- `--child-nodes-file`
-- `--default-target-user`
-- `--default-target-password`
-- `--default-target-private-key`
-- `--default-target-key-password`
-- `--reverse-tunnel-port-start`
-- `--reverse-tunnel-port-end`
-- `--reverse-tunnel-retries`
-- `--reverse-tunnel-accept-timeout-ms`
-- `--max-connections-per-minute`
-- `-d, --daemon`
-- `-v, --verbose`
+- `-p, --port` SSH 登录端口，默认 `2222`
+- `-a, --agent-port` Agent 注册端口，默认 `8888`
+- `--listen-address` SSH 监听地址，默认 `0.0.0.0`
+- `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
+- `--host-key-path` SSH 主机私钥路径
+- `--users-file` 用户认证文件路径
+- `--agent-token-file` Agent token 文件路径
+- `--permissions-file` 用户权限文件路径
+- `--child-nodes-file` 子节点注册文件路径
+- `--default-target-user` 默认目标主机登录用户名，默认 `root`
+- `--default-target-password` 默认目标主机登录密码
+- `--default-target-private-key` 默认目标主机私钥路径
+- `--default-target-key-password` 默认目标私钥密码
+- `--reverse-tunnel-port-start` NAT 回拨端口池起始值，默认 `38000`
+- `--reverse-tunnel-port-end` NAT 回拨端口池结束值，默认 `38199`
+- `--reverse-tunnel-retries` NAT 回拨重试次数，默认 `3`
+- `--reverse-tunnel-accept-timeout-ms` NAT 回拨 accept 超时(ms)，默认 `7000`
+- `--max-connections-per-minute` 每 IP 每分钟连接上限，默认 `10`
+- `-d, --daemon` 以守护进程方式运行
+- `-v, --verbose` 输出调试日志
 
 `ssh_jump_agent` 常用参数:
-- `-s, --server` (必填)
-- `-p, --port`
-- `-i, --id`
-- `-t, --token` (必填)
-- `-n, --hostname`
-- `-I, --ip`
-- `-S, --service`
-- `-d, --daemon`
-- `-v, --verbose`
+- `-s, --server` 跳板机地址（必填）
+- `-p, --port` 跳板机 Agent 端口，默认 `8888`
+- `-i, --id` Agent ID，默认自动生成
+- `-t, --token` Agent 认证 token（必填）
+- `-n, --hostname` 对外展示的主机名
+- `-I, --ip` 上报给跳板机的内网 IP（可选，不填自动探测）
+- `-S, --service` 暴露服务，格式 `name:type:port`，可重复传多个
+- `-d, --daemon` 以守护进程方式运行
+- `-v, --verbose` 输出调试日志
