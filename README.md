@@ -1,83 +1,53 @@
 # SSH Jump Server
 
-轻量级 SSH 跳板机，支持：
-- 交互式资产菜单
-- Agent 自动注册与心跳
-- NAT 回拨通道（打洞/反向隧道）
-- 基于用户的资产权限控制
-- 公网管理节点对子节点 CRUD
+这个项目的核心用法只有四步：
+1. 安装并编译
+2. 启动 `jump-server`
+3. 启动 `jump-agent`
+4. 用 SSH 登录跳板机并连接资产
 
-详细设计与部署文档在 `docs/`，本 README 只保留快速上手和关键配置。
+---
 
-## 快速开始（推荐 Docker）
+## 1) 安装与编译
 
-```bash
-# 启动完整环境（jump-server + 4 agents + jump-client）
-docker compose up -d
-
-# 连接跳板机（在客户端容器内）
-docker exec -it jump-client ssh -p 2222 admin@jump-server
-# 密码: admin123
-```
-
-默认测试账号：
-- `admin / admin123`：访问全部资产
-- `developer / dev123`：访问 web/api
-- `ops / ops123`：访问 web/api/cache
-
-## 本地编译
+### Ubuntu / Debian
 
 ```bash
-# Ubuntu/Debian
 sudo apt-get update
 sudo apt-get install -y cmake build-essential libssh-dev libssl-dev pkg-config
+```
 
+### 编译
+
+```bash
 git clone <repository-url>
 cd ssh-jumper
 mkdir build && cd build
 
-# 默认启用 Folly（找不到会回退到 std）
+# 默认启用 Folly（若缺失会回退到 std）
 cmake -DENABLE_FOLLY=ON ..
 make -j"$(nproc)"
 ```
 
-显式关闭 Folly：
+如果你不想用 Folly：
 
 ```bash
 cmake -DENABLE_FOLLY=OFF ..
 make -j"$(nproc)"
 ```
 
-## 启动方式
+---
 
-README 中服务端命令统一使用二进制名 `ssh_jump_server`（如果你本机包装成 `jumper-server`，参数含义一致）。
+## 2) 启动 jump-server
 
-`ssh_jump_server` 默认读取 `/etc/ssh_jump/config.conf`，`-c` 只是覆盖默认路径。
+### 2.1 准备配置目录
 
 ```bash
-# 使用默认配置路径
-./ssh_jump_server
-
-# 指定配置路径
-./ssh_jump_server -c /etc/ssh_jump/config.conf
-
-# 后台模式
-./ssh_jump_server -c /etc/ssh_jump/config.conf -d
+sudo mkdir -p /etc/ssh_jump /var/log/ssh_jump
+sudo ssh-keygen -t rsa -b 4096 -f /etc/ssh_jump/host_key -N ""
 ```
 
-### `ssh_jump_server` 命令行参数
-
-| 参数 | 默认值 | 说明 |
-|---|---|---|
-| `-c, --config <path>` | `/etc/ssh_jump/config.conf` | 指定配置文件路径 |
-| `-p, --port <port>` | `2222` | 覆盖 SSH 监听端口 |
-| `-a, --agent-port <port>` | `8888` | 覆盖 Agent 集群监听端口 |
-| `-d, --daemon` | `false` | 以守护进程方式运行 |
-| `-v, --verbose` | `false` | 输出 debug 级别日志 |
-| `-h, --help` | - | 显示帮助 |
-| `-V, --version` | - | 显示版本 |
-
-## 最小配置示例
+### 2.2 最小配置文件
 
 `/etc/ssh_jump/config.conf`
 
@@ -105,114 +75,113 @@ users_file = /etc/ssh_jump/users.conf
 max_connections_per_minute = 10
 ```
 
-还需要准备：
-- `/etc/ssh_jump/users.conf`
-- `/etc/ssh_jump/agent_tokens.conf`
-- `/etc/ssh_jump/user_permissions.conf`
-- SSH 主机密钥：`/etc/ssh_jump/host_key`
+`/etc/ssh_jump/users.conf`
 
-## 支持的配置项
-
-当前代码支持以下 section/key（以解析器为准）：
-
-- `[ssh]`
-  - `listen_address`
-  - `port`
-  - `host_key_path`
-  - `auth_methods`
-  - `permit_root_login`
-  - `max_auth_tries`
-  - `idle_timeout`
-- `[cluster]`
-  - `listen_address`
-  - `port`
-  - `agent_token_file`
-  - `heartbeat_interval`
-  - `heartbeat_timeout`
-  - `reverse_tunnel_port_start`
-  - `reverse_tunnel_port_end`
-  - `reverse_tunnel_retries`
-  - `reverse_tunnel_accept_timeout_ms`
-- `[assets]`
-  - `refresh_interval`
-  - `permissions_file`
-- `[logging]`
-  - `level`
-  - `log_file`
-  - `audit_log`
-  - `session_recording`
-  - `session_path`
-- `[security]`
-  - `command_audit`
-  - `allow_port_forwarding`
-  - `allow_sftp`
-  - `max_connections_per_minute`
-  - `users_file`
-  - `default_target_user`
-  - `default_target_password`
-  - `default_target_private_key`
-  - `default_target_key_password`
-- `[management]`
-  - `child_nodes_file`
-
-## 常用操作
-
-连接方式：
-
-```bash
-# 交互菜单
-ssh -p 2222 admin@<jump-host>
-
-# 直连目标资产
-ssh -p 2222 admin@<jump-host> web-server-01
+```ini
+# admin123 的 SHA256
+admin = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9
 ```
 
-子节点管理工具（公网管理节点）：
+`/etc/ssh_jump/agent_tokens.conf`
 
-```bash
-ssh_jump_node_tool --nodes-file /etc/ssh_jump/child_nodes.conf --list-nodes
+```ini
+web-server-01 = ws01-secret-token
 ```
 
-## 测试
+`/etc/ssh_jump/user_permissions.conf`
 
-推荐完整回归：
+```ini
+[user:admin]
+allow_all = true
+```
+
+### 2.3 启动命令
+
+`ssh_jump_server` 默认读取 `/etc/ssh_jump/config.conf`，不强制必须 `-c`。
 
 ```bash
-# 端到端测试（自动构建、验证、清理）
+# 前台
+./ssh_jump_server
+
+# 指定配置
+./ssh_jump_server -c /etc/ssh_jump/config.conf
+
+# 守护进程
+./ssh_jump_server -c /etc/ssh_jump/config.conf -d
+```
+
+---
+
+## 3) 启动 jump-agent
+
+### 3.1 命令行方式（推荐先这样测通）
+
+```bash
+./ssh_jump_agent \
+  -s <jump-server-ip> \
+  -p 8888 \
+  -i web-server-01 \
+  -t ws01-secret-token \
+  -n web-server-01 \
+  -S ssh:ssh:22
+```
+
+### 3.2 配置文件方式
+
+`/etc/ssh_jump/agent.conf`
+
+```ini
+[server]
+address = <jump-server-ip>
+port = 8888
+
+[agent]
+id = web-server-01
+token = ws01-secret-token
+hostname = web-server-01
+
+[service]
+expose = ssh:ssh:22
+```
+
+启动：
+
+```bash
+./ssh_jump_agent -c /etc/ssh_jump/agent.conf
+```
+
+---
+
+## 4) SSH 登录方式（核心）
+
+```bash
+# 交互菜单登录（推荐）
+ssh -p 2222 admin@<jump-server-ip>
+
+# 直接指定资产登录
+ssh -p 2222 admin@<jump-server-ip> web-server-01
+```
+
+登录后常用输入：
+- `1` / `2`：按序号连接
+- `web`：模糊搜索连接
+- `^api`：前缀匹配
+- `$01`：后缀匹配
+- `q`：退出
+
+---
+
+## 测试（可选）
+
+```bash
+# Docker 端到端测试
 ./docker/test.sh
-
-# 排障时保留环境
-KEEP_TEST_ENV=1 ./docker/test.sh
 ```
 
-其它：
+---
 
-```bash
-# 客户端自动化脚本
-docker compose exec -T jump-client bash -lc "/usr/local/bin/client-test.sh auto"
+## 更多文档
 
-# Folly ON/OFF 对比
-./docker/perf-compare.sh
-```
-
-## 文档索引
-
-- [配置说明](docs/configuration.md)
-- [快速开始](docs/quickstart.md)
-- [部署指南](docs/deployment.md)
-- [性能说明](docs/performance.md)
-- [协议文档](docs/protocol.md)
-- [NAT 测试矩阵](docs/nat-test-matrix.md)
-
-## 故障排查
-
-```bash
-# 看服务日志
-docker compose logs -f jump-server
-
-# 看容器状态
-docker compose ps
-
-# 检查端口
-ss -tlnp | grep -E '2222|8888'
-```
+- 配置详解：`docs/configuration.md`
+- 部署：`docs/deployment.md`
+- NAT 测试矩阵：`docs/nat-test-matrix.md`
