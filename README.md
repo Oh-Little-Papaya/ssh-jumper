@@ -64,6 +64,8 @@ EOF
   --max-connections-per-minute 10
 ```
 
+不要再使用旧命令：`./ssh_jump_server -c /etc/ssh_jump/config.conf`（已废弃）。
+
 ## 3) 启动 jump-agent
 
 ```bash

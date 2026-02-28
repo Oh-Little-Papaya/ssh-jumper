@@ -1,8 +1,9 @@
 # SSH Jump Server 配置指南
 
-## 配置文件结构
+> 注意：当前版本已切换为纯命令行参数驱动，不再支持 `-c/--config`。
+> 下文的 `[ssh]`、`[cluster]` 等仅代表参数逻辑分组，不代表可直接加载的配置文件。
 
-SSH Jump Server 使用 INI 格式的配置文件，支持以下主要配置节：
+## 参数分组
 
 - `[ssh]` - SSH 服务器配置
 - `[cluster]` - Agent 集群管理配置
@@ -244,56 +245,29 @@ max_sessions = 1
 4. **模式匹配检查**：如果主机名匹配 `allowed_patterns` 中的任一模式，允许访问
 5. **默认拒绝**：以上都不满足，拒绝访问
 
-## Agent 配置文件
+## Agent 启动参数
 
-Agent 支持使用配置文件运行：
+Agent 使用命令行参数运行：
 
-```ini
-# /etc/ssh_jump/agent.conf
-
-[server]
-address = jump.example.com
-port = 8888
-
-[agent]
-id = web-server-01
-token = ws01-secret-token
-hostname = Web Server 01
-
-[service]
-expose = ssh:ssh:22
-expose = web:http:80
-expose = app:http:8080
+```bash
+./ssh_jump_agent \
+  -s jump.example.com \
+  -p 8888 \
+  -i web-server-01 \
+  -t ws01-secret-token \
+  -n web-server-01 \
+  -S ssh:ssh:22 \
+  -S web:http:80
 ```
 
-### [server] 服务器连接配置
-
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| `address` | string | 跳板机服务器地址 |
-| `port` | int | 跳板机集群端口 |
-
-### [agent] Agent 身份配置
-
-| 配置项 | 类型 | 说明 |
-|--------|------|------|
-| `id` | string | Agent 唯一标识 |
-| `token` | string | 认证 Token |
-| `hostname` | string | 显示的主机名 |
-
-### [service] 服务暴露配置
-
-格式：`name:type:port`
-
-- `name`: 服务名称（如 ssh, web, mysql）
-- `type`: 协议类型（如 ssh, http, tcp）
-- `port`: 本地端口
-
-示例：
-- `ssh:ssh:22` - SSH 服务
-- `web:http:80` - HTTP Web 服务
-- `api:http:8080` - API 服务
-- `mysql:tcp:3306` - MySQL 数据库
+常用参数：
+- `-s, --server` 跳板机地址（必填）
+- `-p, --port` 跳板机集群端口（默认 `8888`）
+- `-i, --id` Agent 唯一标识
+- `-t, --token` 认证 Token（必填）
+- `-n, --hostname` 显示的主机名
+- `-I, --ip` 上报的本地 IP（可选）
+- `-S, --service` 暴露服务，格式 `name:type:port`，可重复传递
 
 ## 环境变量
 
@@ -301,14 +275,12 @@ expose = app:http:8080
 
 | 变量名 | 说明 |
 |--------|------|
-| `SSH_JUMP_CONFIG` | 配置文件路径，覆盖 `-c` 参数 |
-| `SSH_JUMP_LOG_LEVEL` | 日志级别，覆盖配置文件 |
+| `SSH_JUMP_LOG_LEVEL` | 日志级别，覆盖默认日志级别 |
 
 Agent 支持以下环境变量：
 
 | 变量名 | 说明 |
 |--------|------|
-| `SSH_JUMP_AGENT_CONFIG` | 配置文件路径 |
 | `SSH_JUMP_SERVER` | 服务器地址 |
 | `SSH_JUMP_PORT` | 服务器端口 |
 
@@ -324,7 +296,16 @@ pgrep ssh_jump_server
 kill -TERM <pid>
 
 # 重新启动
-./ssh_jump_server -c /etc/ssh_jump/config.conf
+./ssh_jump_server \
+  -p 2222 \
+  -a 8888 \
+  --listen-address 0.0.0.0 \
+  --cluster-listen-address 0.0.0.0 \
+  --host-key-path /etc/ssh_jump/host_key \
+  --users-file /etc/ssh_jump/users.conf \
+  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
+  --permissions-file /etc/ssh_jump/user_permissions.conf \
+  --child-nodes-file /etc/ssh_jump/child_nodes.conf
 ```
 
 ## 配置验证
@@ -332,12 +313,21 @@ kill -TERM <pid>
 启动时使用 `-v` 参数启用详细输出，可以验证配置是否正确加载：
 
 ```bash
-./ssh_jump_server -c /etc/ssh_jump/config.conf -v
+./ssh_jump_server \
+  -p 2222 \
+  -a 8888 \
+  --listen-address 0.0.0.0 \
+  --cluster-listen-address 0.0.0.0 \
+  --host-key-path /etc/ssh_jump/host_key \
+  --users-file /etc/ssh_jump/users.conf \
+  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
+  --permissions-file /etc/ssh_jump/user_permissions.conf \
+  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  -v
 ```
 
 输出示例：
 ```
-[2024-01-01 12:00:00][INFO] Config loaded from: /etc/ssh_jump/config.conf
 [2024-01-01 12:00:00][INFO] SSH Server: 0.0.0.0:2222
 [2024-01-01 12:00:00][INFO] Cluster Manager: 0.0.0.0:8888
 [2024-01-01 12:00:00][INFO] Loaded 5 agent tokens

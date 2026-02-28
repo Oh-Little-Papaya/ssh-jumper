@@ -27,7 +27,7 @@ make -j$(nproc)
 sudo make install
 ```
 
-## 2. 初始化配置（1 分钟）
+## 2. 初始化运行文件（1 分钟）
 
 ```bash
 # 创建目录
@@ -35,33 +35,6 @@ sudo mkdir -p /etc/ssh_jump /var/log/ssh_jump
 
 # 生成主机密钥
 sudo ssh-keygen -t rsa -b 2048 -f /etc/ssh_jump/host_key -N ""
-
-# 创建基本配置
-sudo tee /etc/ssh_jump/config.conf << 'EOF'
-[ssh]
-listen_address = 0.0.0.0
-port = 2222
-host_key_path = /etc/ssh_jump/host_key
-auth_methods = publickey,password
-
-[cluster]
-listen_address = 0.0.0.0
-port = 8888
-agent_token_file = /etc/ssh_jump/agent_tokens.conf
-reverse_tunnel_port_start = 38000
-reverse_tunnel_port_end = 38199
-reverse_tunnel_retries = 3
-reverse_tunnel_accept_timeout_ms = 7000
-
-[security]
-max_connections_per_minute = 10
-users_file = /etc/ssh_jump/users.conf
-
-[logging]
-level = info
-log_file = /var/log/ssh_jump/server.log
-audit_log = /var/log/ssh_jump/audit.log
-EOF
 
 # 创建用户认证文件（默认 admin/admin123，生产环境请修改）
 sudo tee /etc/ssh_jump/users.conf << 'EOF'
@@ -84,10 +57,31 @@ EOF
 
 ```bash
 # 启动
-sudo ./ssh_jump_server -c /etc/ssh_jump/config.conf
+sudo ./ssh_jump_server \
+  -p 2222 \
+  -a 8888 \
+  --listen-address 0.0.0.0 \
+  --cluster-listen-address 0.0.0.0 \
+  --host-key-path /etc/ssh_jump/host_key \
+  --users-file /etc/ssh_jump/users.conf \
+  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
+  --permissions-file /etc/ssh_jump/user_permissions.conf \
+  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --default-target-user root
 
 # 或使用守护进程模式
-sudo ./ssh_jump_server -c /etc/ssh_jump/config.conf -d
+sudo ./ssh_jump_server \
+  -p 2222 \
+  -a 8888 \
+  --listen-address 0.0.0.0 \
+  --cluster-listen-address 0.0.0.0 \
+  --host-key-path /etc/ssh_jump/host_key \
+  --users-file /etc/ssh_jump/users.conf \
+  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
+  --permissions-file /etc/ssh_jump/user_permissions.conf \
+  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --default-target-user root \
+  -d
 ```
 
 检查是否启动成功：

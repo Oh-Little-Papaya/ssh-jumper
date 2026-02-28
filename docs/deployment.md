@@ -81,47 +81,31 @@ sudo chmod 600 /etc/ssh_jump/host_key*
 sudo chmod 644 /etc/ssh_jump/host_key*.pub
 ```
 
-### 4. 配置文件
+### 4. 准备运行参数对应文件
 
-创建主配置文件 `/etc/ssh_jump/config.conf`：
+`ssh_jump_server` 现在是纯 CLI 参数驱动，不再读取 `/etc/ssh_jump/config.conf`。
 
-```ini
-[ssh]
-listen_address = 0.0.0.0
-port = 2222
-host_key_path = /etc/ssh_jump/host_key
-auth_methods = publickey
-permit_root_login = false
-max_auth_tries = 3
-idle_timeout = 300
+建议将运行参数固定在 systemd `ExecStart`（见下一节），并准备这些文件：
+- `/etc/ssh_jump/host_key`
+- `/etc/ssh_jump/users.conf`
+- `/etc/ssh_jump/agent_tokens.conf`
+- `/etc/ssh_jump/user_permissions.conf`
+- `/etc/ssh_jump/child_nodes.conf`（可选）
 
-[cluster]
-listen_address = 0.0.0.0
-port = 8888
-agent_token_file = /etc/ssh_jump/agent_tokens.conf
-heartbeat_interval = 30
-heartbeat_timeout = 90
-reverse_tunnel_port_start = 38000
-reverse_tunnel_port_end = 38199
-reverse_tunnel_retries = 3
-reverse_tunnel_accept_timeout_ms = 7000
+手动启动示例：
 
-[assets]
-permissions_file = /etc/ssh_jump/user_permissions.conf
-refresh_interval = 30
-
-[logging]
-level = info
-log_file = /var/log/ssh_jump/server.log
-audit_log = /var/log/ssh_jump/audit.log
-session_recording = true
-session_path = /var/log/ssh_jump/sessions/
-
-[security]
-command_audit = true
-allow_port_forwarding = false
-allow_sftp = false
-max_connections_per_minute = 10
+```bash
+/opt/ssh_jump/ssh_jump_server \
+  -p 2222 \
+  -a 8888 \
+  --listen-address 0.0.0.0 \
+  --cluster-listen-address 0.0.0.0 \
+  --host-key-path /etc/ssh_jump/host_key \
+  --users-file /etc/ssh_jump/users.conf \
+  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
+  --permissions-file /etc/ssh_jump/user_permissions.conf \
+  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --default-target-user root
 ```
 
 创建 Agent Token 文件 `/etc/ssh_jump/agent_tokens.conf`：
@@ -174,7 +158,7 @@ After=network.target
 Type=simple
 User=sshjump
 Group=sshjump
-ExecStart=/opt/ssh_jump/ssh_jump_server -c /etc/ssh_jump/config.conf
+ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --host-key-path /etc/ssh_jump/host_key --users-file /etc/ssh_jump/users.conf --agent-token-file /etc/ssh_jump/agent_tokens.conf --permissions-file /etc/ssh_jump/user_permissions.conf --child-nodes-file /etc/ssh_jump/child_nodes.conf --default-target-user root
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure
@@ -204,7 +188,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/ssh_jump/ssh_jump_agent -c /etc/ssh_jump/agent-%i.conf
+ExecStart=/opt/ssh_jump/ssh_jump_agent -s jump.example.com -p 8888 -i %i -t REPLACE_WITH_TOKEN -n %i -S ssh:ssh:22
 Restart=on-failure
 RestartSec=10s
 
@@ -266,31 +250,15 @@ mkdir -p /opt/ssh_jump
 cp ssh_jump_agent /opt/ssh_jump/
 chmod +x /opt/ssh_jump/ssh_jump_agent
 
-# 创建配置
-mkdir -p /etc/ssh_jump
-cat > /etc/ssh_jump/agent.conf << EOF
-[server]
-address = ${SERVER_ADDR}
-port = ${SERVER_PORT}
-
-[agent]
-id = ${AGENT_ID}
-token = ${TOKEN}
-hostname = $(hostname -f)
-
-[service]
-expose = ssh:ssh:22
-EOF
-
 # 创建 systemd 服务
-cat > /etc/systemd/system/ssh-jump-agent.service << 'EOF'
+cat > /etc/systemd/system/ssh-jump-agent.service << EOF
 [Unit]
 Description=SSH Jump Agent
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/ssh_jump/ssh_jump_agent -c /etc/ssh_jump/agent.conf
+ExecStart=/opt/ssh_jump/ssh_jump_agent -s ${SERVER_ADDR} -p ${SERVER_PORT} -i ${AGENT_ID} -t ${TOKEN} -n $(hostname -f) -S ssh:ssh:22
 Restart=on-failure
 RestartSec=10s
 
@@ -494,7 +462,7 @@ find /backup/ssh_jump -type d -mtime +30 -exec rm -rf {} \;
 
 ```bash
 # 前台运行，详细日志
-sudo -u sshjump /opt/ssh_jump/ssh_jump_server -c /etc/ssh_jump/config.conf -v
+sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --host-key-path /etc/ssh_jump/host_key --users-file /etc/ssh_jump/users.conf --agent-token-file /etc/ssh_jump/agent_tokens.conf --permissions-file /etc/ssh_jump/user_permissions.conf --child-nodes-file /etc/ssh_jump/child_nodes.conf -v
 
 # 使用 strace
 sudo strace -f -e trace=network /opt/ssh_jump/ssh_jump_server -v
