@@ -45,6 +45,10 @@ port = 8888
 agent_token_file = /etc/ssh_jump/agent_tokens.conf
 heartbeat_interval = 30
 heartbeat_timeout = 90
+reverse_tunnel_port_start = 38000
+reverse_tunnel_port_end = 38199
+reverse_tunnel_retries = 3
+reverse_tunnel_accept_timeout_ms = 7000
 ```
 
 | 配置项 | 类型 | 默认值 | 说明 |
@@ -54,6 +58,10 @@ heartbeat_timeout = 90
 | `agent_token_file` | string | /etc/ssh_jump/agent_tokens.conf | Agent Token 配置文件路径 |
 | `heartbeat_interval` | int | 30 | 期望的心跳间隔（秒）|
 | `heartbeat_timeout` | int | 90 | 心跳超时时间（秒），超时后标记为离线 |
+| `reverse_tunnel_port_start` | int | 38000 | Agent 回拨端口池起始端口（需在防火墙放行） |
+| `reverse_tunnel_port_end` | int | 38199 | Agent 回拨端口池结束端口 |
+| `reverse_tunnel_retries` | int | 3 | 单次转发请求的回拨重试次数 |
+| `reverse_tunnel_accept_timeout_ms` | int | 7000 | 每次回拨等待超时（毫秒） |
 
 ### [assets] 资产管理配置
 

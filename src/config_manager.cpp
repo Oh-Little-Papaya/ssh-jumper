@@ -89,6 +89,10 @@ void ConfigManager::parseLine(const std::string& line, std::string& currentSecti
         else if (key == "agent_token_file") serverConfig_.cluster.agentTokenFile = value;
         else if (key == "heartbeat_interval") serverConfig_.cluster.heartbeatInterval = safeStringToInt(value, DEFAULT_HEARTBEAT_INTERVAL);
         else if (key == "heartbeat_timeout") serverConfig_.cluster.heartbeatTimeout = safeStringToInt(value, 90);
+        else if (key == "reverse_tunnel_port_start") serverConfig_.cluster.reverseTunnelPortStart = safeStringToInt(value, 38000);
+        else if (key == "reverse_tunnel_port_end") serverConfig_.cluster.reverseTunnelPortEnd = safeStringToInt(value, 38199);
+        else if (key == "reverse_tunnel_retries") serverConfig_.cluster.reverseTunnelRetries = safeStringToInt(value, 3);
+        else if (key == "reverse_tunnel_accept_timeout_ms") serverConfig_.cluster.reverseTunnelAcceptTimeoutMs = safeStringToInt(value, 7000);
     }
     else if (currentSection == "assets") {
         if (key == "refresh_interval") serverConfig_.assets.refreshInterval = safeStringToInt(value, 30);
@@ -409,6 +413,27 @@ bool ConfigManager::validate() {
         return false;
     }
 
+    if (serverConfig_.cluster.reverseTunnelPortStart <= 0 ||
+        serverConfig_.cluster.reverseTunnelPortStart > 65535 ||
+        serverConfig_.cluster.reverseTunnelPortEnd <= 0 ||
+        serverConfig_.cluster.reverseTunnelPortEnd > 65535 ||
+        serverConfig_.cluster.reverseTunnelPortStart > serverConfig_.cluster.reverseTunnelPortEnd) {
+        LOG_ERROR("Invalid reverse tunnel port range");
+        return false;
+    }
+
+    if (serverConfig_.cluster.reverseTunnelRetries <= 0 ||
+        serverConfig_.cluster.reverseTunnelRetries > 20) {
+        LOG_ERROR("Invalid reverse tunnel retries");
+        return false;
+    }
+
+    if (serverConfig_.cluster.reverseTunnelAcceptTimeoutMs <= 0 ||
+        serverConfig_.cluster.reverseTunnelAcceptTimeoutMs > 120000) {
+        LOG_ERROR("Invalid reverse tunnel accept timeout");
+        return false;
+    }
+
     // 检查是否至少有一个用户
     if (serverConfig_.users.empty()) {
         LOG_ERROR("No users configured!");
@@ -429,6 +454,11 @@ void ConfigManager::printConfig() {
     LOG_INFO("Cluster:");
     LOG_INFO("  Listen: " + serverConfig_.cluster.listenAddress + ":" + std::to_string(serverConfig_.cluster.port));
     LOG_INFO("  Token File: " + serverConfig_.cluster.agentTokenFile);
+    LOG_INFO("  Reverse Tunnel Port Range: " +
+             std::to_string(serverConfig_.cluster.reverseTunnelPortStart) + "-" +
+             std::to_string(serverConfig_.cluster.reverseTunnelPortEnd));
+    LOG_INFO("  Reverse Tunnel Retries: " + std::to_string(serverConfig_.cluster.reverseTunnelRetries));
+    LOG_INFO("  Reverse Tunnel Accept Timeout(ms): " + std::to_string(serverConfig_.cluster.reverseTunnelAcceptTimeoutMs));
     LOG_INFO("Management:");
     LOG_INFO("  Child Nodes File: " + serverConfig_.management.childNodesFile);
     LOG_INFO("Users: " + std::to_string(serverConfig_.users.size()));

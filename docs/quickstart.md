@@ -48,6 +48,10 @@ auth_methods = publickey,password
 listen_address = 0.0.0.0
 port = 8888
 agent_token_file = /etc/ssh_jump/agent_tokens.conf
+reverse_tunnel_port_start = 38000
+reverse_tunnel_port_end = 38199
+reverse_tunnel_retries = 3
+reverse_tunnel_accept_timeout_ms = 7000
 
 [security]
 users_file = /etc/ssh_jump/users.conf

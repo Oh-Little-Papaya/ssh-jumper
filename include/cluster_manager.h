@@ -8,6 +8,7 @@
 
 #include "common.h"
 #include "event_loop.h"
+#include <tuple>
 
 namespace sshjump {
 
@@ -230,6 +231,12 @@ public:
     
     // 建立到Agent的转发连接
     int establishForwardConnection(const std::string& agentId, int targetPort);
+
+    // 设置 NAT 回拨隧道参数（端口池、重试、超时）
+    void setReverseTunnelOptions(int portStart, int portEnd, int retries, int acceptTimeoutMs);
+
+    // 获取 NAT 回拨隧道参数
+    std::tuple<int, int, int, int> getReverseTunnelOptions() const;
     
     // 获取监听fd
     int getListenFd() const { return listenFd_; }
@@ -286,6 +293,13 @@ private:
     
     // 运行标志
     std::atomic<bool> running_;
+
+    // NAT 回拨隧道参数
+    int reverseTunnelPortStart_;
+    int reverseTunnelPortEnd_;
+    int reverseTunnelRetries_;
+    int reverseTunnelAcceptTimeoutMs_;
+    std::atomic<int> reverseTunnelPortCursor_;
 };
 
 // ============================================

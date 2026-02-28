@@ -32,6 +32,10 @@ struct ClusterConfig {
     std::string agentTokenFile = "/etc/ssh_jump/agent_tokens.conf";
     int heartbeatInterval = 30;
     int heartbeatTimeout = 90;
+    int reverseTunnelPortStart = 38000;
+    int reverseTunnelPortEnd = 38199;
+    int reverseTunnelRetries = 3;
+    int reverseTunnelAcceptTimeoutMs = 7000;
 };
 
 // ============================================

@@ -30,6 +30,10 @@ TEST(config_load_valid_file, "配置管理") {
     file << "[cluster]\n";
     file << "port = 9999\n";
     file << "heartbeat_interval = 60\n";
+    file << "reverse_tunnel_port_start = 42000\n";
+    file << "reverse_tunnel_port_end = 42010\n";
+    file << "reverse_tunnel_retries = 5\n";
+    file << "reverse_tunnel_accept_timeout_ms = 9000\n";
     file << "\n";
     file << "[security]\n";
     file << "users_file = /tmp/test_users.conf\n";
@@ -56,6 +60,10 @@ TEST(config_load_valid_file, "配置管理") {
     ASSERT_EQ(600, config.getServerConfig().ssh.idleTimeout);
     ASSERT_EQ(9999, config.getServerConfig().cluster.port);
     ASSERT_EQ(60, config.getServerConfig().cluster.heartbeatInterval);
+    ASSERT_EQ(42000, config.getServerConfig().cluster.reverseTunnelPortStart);
+    ASSERT_EQ(42010, config.getServerConfig().cluster.reverseTunnelPortEnd);
+    ASSERT_EQ(5, config.getServerConfig().cluster.reverseTunnelRetries);
+    ASSERT_EQ(9000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
     
     return true;
 }
@@ -96,6 +104,10 @@ TEST(config_default_values, "配置管理") {
     ASSERT_EQ(300, config.getServerConfig().ssh.idleTimeout);
     ASSERT_EQ(8888, config.getServerConfig().cluster.port);
     ASSERT_EQ(30, config.getServerConfig().cluster.heartbeatInterval);
+    ASSERT_EQ(38000, config.getServerConfig().cluster.reverseTunnelPortStart);
+    ASSERT_EQ(38199, config.getServerConfig().cluster.reverseTunnelPortEnd);
+    ASSERT_EQ(3, config.getServerConfig().cluster.reverseTunnelRetries);
+    ASSERT_EQ(7000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
     ASSERT_EQ("info", config.getServerConfig().logging.level);
     ASSERT_TRUE(config.getServerConfig().logging.sessionRecording);
     
@@ -240,6 +252,64 @@ TEST(config_management_settings, "配置管理") {
 
     ASSERT_TRUE(result);
     ASSERT_EQ("/tmp/test_child_nodes.conf", config.getServerConfig().management.childNodesFile);
+    return true;
+}
+
+TEST(config_cluster_reverse_tunnel_validate, "配置管理") {
+    const char* testFile = "/tmp/test_config_cluster_reverse_tunnel.conf";
+    const char* userFile = "/tmp/test_users_cluster_reverse_tunnel.conf";
+    std::ofstream file(testFile);
+    file << "[cluster]\n";
+    file << "reverse_tunnel_port_start = 45000\n";
+    file << "reverse_tunnel_port_end = 45020\n";
+    file << "reverse_tunnel_retries = 4\n";
+    file << "reverse_tunnel_accept_timeout_ms = 12000\n";
+    file << "[security]\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_EQ(45000, config.getServerConfig().cluster.reverseTunnelPortStart);
+    ASSERT_EQ(45020, config.getServerConfig().cluster.reverseTunnelPortEnd);
+    ASSERT_EQ(4, config.getServerConfig().cluster.reverseTunnelRetries);
+    ASSERT_EQ(12000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
+    ASSERT_TRUE(config.validate());
+    return true;
+}
+
+TEST(config_cluster_reverse_tunnel_invalid_range, "配置管理") {
+    const char* testFile = "/tmp/test_config_cluster_reverse_tunnel_invalid.conf";
+    const char* userFile = "/tmp/test_users_cluster_reverse_tunnel_invalid.conf";
+    std::ofstream file(testFile);
+    file << "[cluster]\n";
+    file << "reverse_tunnel_port_start = 46010\n";
+    file << "reverse_tunnel_port_end = 46000\n";
+    file << "[security]\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_FALSE(config.validate());
     return true;
 }
 

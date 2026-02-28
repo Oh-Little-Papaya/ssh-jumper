@@ -22,7 +22,8 @@
 
 - **NAT 穿透（Agent 回拨）**
   - 对于位于 NAT 后的内网主机，支持通过 Agent 控制连接下发转发请求
-  - Agent 主动回拨跳板机建立数据通道，无需暴露内网主机入站端口
+  - Agent 主动回拨跳板机固定端口池建立数据通道，无需暴露内网主机入站端口
+  - 支持配置回拨重试次数与超时，支持 IPv4/IPv6 回拨地址
   - 回拨失败时自动回退到传统直连模式（兼容无 NAT 场景）
 
 - **公网管理节点子节点管理（CRUD）**
@@ -160,6 +161,10 @@ port = 8888
 agent_token_file = /etc/ssh_jump/agent_tokens.conf
 heartbeat_interval = 30
 heartbeat_timeout = 90
+reverse_tunnel_port_start = 38000
+reverse_tunnel_port_end = 38199
+reverse_tunnel_retries = 3
+reverse_tunnel_accept_timeout_ms = 7000
 
 [assets]
 permissions_file = /etc/ssh_jump/user_permissions.conf
@@ -416,6 +421,8 @@ KEEP_TEST_ENV=1 ./docker/test.sh
 # Folly ON/OFF 对比基准（自动清理构建镜像）
 ./docker/perf-compare.sh
 ```
+
+NAT 类型覆盖与验收标准见 [docs/nat-test-matrix.md](docs/nat-test-matrix.md)。
 
 ## 系统要求
 

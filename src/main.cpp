@@ -253,16 +253,23 @@ int main(int argc, char* argv[]) {
     
     // 创建并启动集群管理器 (用于内网机器注册)
     auto clusterManager = std::make_shared<ClusterManager>();
-    auto& clusterListenAddr = configManager.getServerConfig().cluster.listenAddress;
+    auto& clusterConfig = configManager.getServerConfig().cluster;
+    auto& clusterListenAddr = clusterConfig.listenAddress;
     if (!clusterManager->initialize(clusterListenAddr, agentPort, eventLoop)) {
         LOG_FATAL("Failed to initialize cluster manager");
         removePidFile(pidFile);
         ssh_finalize();
         return 1;
     }
+
+    clusterManager->setReverseTunnelOptions(
+        clusterConfig.reverseTunnelPortStart,
+        clusterConfig.reverseTunnelPortEnd,
+        clusterConfig.reverseTunnelRetries,
+        clusterConfig.reverseTunnelAcceptTimeoutMs);
     
     // 加载 Agent token 配置
-    clusterManager->loadAgentTokens(configManager.getServerConfig().cluster.agentTokenFile);
+    clusterManager->loadAgentTokens(clusterConfig.agentTokenFile);
     
     if (!clusterManager->start()) {
         LOG_FATAL("Failed to start cluster manager");

@@ -236,6 +236,32 @@ TEST(cluster_manager_initialization, "集群管理") {
     return true;
 }
 
+TEST(cluster_manager_reverse_tunnel_options, "集群管理") {
+    ClusterManager manager;
+    manager.setReverseTunnelOptions(42000, 42010, 5, 9000);
+
+    auto [startPort, endPort, retries, timeoutMs] = manager.getReverseTunnelOptions();
+    ASSERT_EQ(42000, startPort);
+    ASSERT_EQ(42010, endPort);
+    ASSERT_EQ(5, retries);
+    ASSERT_EQ(9000, timeoutMs);
+
+    return true;
+}
+
+TEST(cluster_manager_reverse_tunnel_options_invalid_fallback, "集群管理") {
+    ClusterManager manager;
+    manager.setReverseTunnelOptions(70000, 100, 0, -1);
+
+    auto [startPort, endPort, retries, timeoutMs] = manager.getReverseTunnelOptions();
+    ASSERT_EQ(38000, startPort);
+    ASSERT_EQ(38199, endPort);
+    ASSERT_EQ(3, retries);
+    ASSERT_EQ(7000, timeoutMs);
+
+    return true;
+}
+
 TEST(cluster_manager_agent_tokens, "集群管理") {
     ClusterManager manager;
     

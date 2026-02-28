@@ -195,6 +195,29 @@ test_permission_matrix() {
     fi
 }
 
+test_nat_reverse_tunnel() {
+    log_info "测试 NAT 回拨通道..."
+
+    local before_count after_count nat_flow
+    before_count="$($COMPOSE logs jump-server 2>&1 | grep -c 'Reverse tunnel established for agent' || true)"
+
+    nat_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 2; echo exit) | sshpass -p 'admin123' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 admin@jump-server web-server-01\" 2>/dev/null || true")"
+
+    if echo "$nat_flow" | grep -q "连接失败"; then
+        log_fail "NAT 回拨会话建立失败（连接被拒绝）"
+        return
+    fi
+
+    sleep 2
+    after_count="$($COMPOSE logs jump-server 2>&1 | grep -c 'Reverse tunnel established for agent' || true)"
+
+    if [ "$after_count" -gt "$before_count" ]; then
+        log_pass "检测到新的 Reverse tunnel established 日志，NAT 回拨通道有效"
+    else
+        log_fail "未检测到 NAT 回拨建立日志"
+    fi
+}
+
 test_session_connectivity() {
     log_info "测试会话连接能力（交互 + 直连）..."
 
@@ -283,6 +306,7 @@ main() {
     test_agent_registration
     test_authentication
     test_permission_matrix
+    test_nat_reverse_tunnel
     test_session_connectivity
     test_child_node_crud
     test_client_auto_suite

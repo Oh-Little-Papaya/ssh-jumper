@@ -43,37 +43,35 @@ bool SSHClient::connect(const std::string& host, int port,
     // 使用 getaddrinfo 进行线程安全的地址解析
     struct addrinfo hints, *result = nullptr;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;  // IPv4
+    hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
 
-    int gaiRet = getaddrinfo(host.c_str(), nullptr, &hints, &result);
+    int gaiRet = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &result);
     if (gaiRet != 0 || !result) {
         LOG_ERROR("Failed to resolve host: " + host + " - " + std::string(gai_strerror(gaiRet)));
         return false;
     }
 
-    // 创建 socket
-    sockFd_ = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (sockFd_ < 0) {
-        LOG_ERROR("Failed to create socket: " + std::string(strerror(errno)));
-        freeaddrinfo(result);
-        return false;
-    }
-
-    // 设置端口
-    struct sockaddr_in* addr = (struct sockaddr_in*)result->ai_addr;
-    addr->sin_port = htons(port);
-
-    // 连接
-    if (::connect(sockFd_, result->ai_addr, result->ai_addrlen) < 0) {
-        LOG_ERROR("Failed to connect to " + host + ":" + std::to_string(port));
-        closeSocket(sockFd_);
-        freeaddrinfo(result);
-        return false;
+    int connectedFd = -1;
+    for (auto* ai = result; ai != nullptr; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+        if (::connect(fd, ai->ai_addr, ai->ai_addrlen) == 0) {
+            connectedFd = fd;
+            break;
+        }
+        close(fd);
     }
 
     freeaddrinfo(result);
+    if (connectedFd < 0) {
+        LOG_ERROR("Failed to connect to " + host + ":" + std::to_string(port));
+        return false;
+    }
 
+    sockFd_ = connectedFd;
     return connectWithSocket(sockFd_, host, port, username, password, privateKey);
 }
 

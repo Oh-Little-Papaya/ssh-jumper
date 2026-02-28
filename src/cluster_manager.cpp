@@ -20,7 +20,10 @@ namespace sshjump {
 namespace {
 
 constexpr int kConnectTimeoutMs = 5000;
-constexpr int kTunnelAcceptTimeoutMs = 7000;
+constexpr int kDefaultTunnelAcceptTimeoutMs = 7000;
+constexpr int kDefaultReverseTunnelPortStart = 38000;
+constexpr int kDefaultReverseTunnelPortEnd = 38199;
+constexpr int kDefaultReverseTunnelRetries = 3;
 constexpr int kSendTimeoutMs = 5000;
 
 std::string extractJsonStringValue(const std::string& payload, const std::string& key) {
@@ -64,6 +67,126 @@ int extractJsonIntValue(const std::string& payload, const std::string& key, int 
     }
 
     return safeStringToInt(payload.substr(valueStart, valueEnd - valueStart), defaultValue);
+}
+
+bool isWildcardAddress(const std::string& address) {
+    return address.empty() || address == "0.0.0.0" || address == "::";
+}
+
+std::string sockaddrToIp(const struct sockaddr* addr) {
+    if (!addr) {
+        return "";
+    }
+
+    char ipBuf[INET6_ADDRSTRLEN] = {0};
+    if (addr->sa_family == AF_INET) {
+        const auto* v4 = reinterpret_cast<const struct sockaddr_in*>(addr);
+        if (inet_ntop(AF_INET, &v4->sin_addr, ipBuf, sizeof(ipBuf))) {
+            return ipBuf;
+        }
+        return "";
+    }
+
+    if (addr->sa_family == AF_INET6) {
+        const auto* v6 = reinterpret_cast<const struct sockaddr_in6*>(addr);
+        if (inet_ntop(AF_INET6, &v6->sin6_addr, ipBuf, sizeof(ipBuf))) {
+            return ipBuf;
+        }
+    }
+
+    return "";
+}
+
+std::string getSocketLocalIp(int fd) {
+    if (fd < 0) {
+        return "";
+    }
+
+    struct sockaddr_storage localAddr;
+    socklen_t localLen = sizeof(localAddr);
+    memset(&localAddr, 0, sizeof(localAddr));
+    if (getsockname(fd, reinterpret_cast<struct sockaddr*>(&localAddr), &localLen) != 0) {
+        return "";
+    }
+
+    return sockaddrToIp(reinterpret_cast<struct sockaddr*>(&localAddr));
+}
+
+int createTcpListener(const std::string& bindHost, int bindPort, int* actualPort) {
+    if (actualPort) {
+        *actualPort = 0;
+    }
+
+    if (bindPort <= 0 || bindPort > 65535) {
+        return -1;
+    }
+
+    struct addrinfo hints;
+    struct addrinfo* result = nullptr;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+
+    const std::string service = std::to_string(bindPort);
+    const char* node = bindHost.empty() ? nullptr : bindHost.c_str();
+    const int gaiRet = getaddrinfo(node, service.c_str(), &hints, &result);
+    if (gaiRet != 0 || !result) {
+        LOG_WARN("Failed to resolve listener address " +
+                 (bindHost.empty() ? std::string("*") : bindHost) + ":" + service +
+                 " - " + std::string(gai_strerror(gaiRet)));
+        return -1;
+    }
+
+    int listenFd = -1;
+    for (auto* ai = result; ai != nullptr; ai = ai->ai_next) {
+        listenFd = socket(ai->ai_family, ai->ai_socktype | SOCK_CLOEXEC, ai->ai_protocol);
+        if (listenFd < 0) {
+            continue;
+        }
+
+        setReuseAddr(listenFd);
+#ifdef IPV6_V6ONLY
+        if (ai->ai_family == AF_INET6) {
+            int v6only = 0;
+            setsockopt(listenFd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+        }
+#endif
+
+        if (bind(listenFd, ai->ai_addr, ai->ai_addrlen) != 0) {
+            closeSocket(listenFd);
+            continue;
+        }
+
+        if (listen(listenFd, 1) != 0) {
+            closeSocket(listenFd);
+            continue;
+        }
+
+        struct sockaddr_storage boundAddr;
+        socklen_t boundLen = sizeof(boundAddr);
+        if (getsockname(listenFd, reinterpret_cast<struct sockaddr*>(&boundAddr), &boundLen) == 0) {
+            if (boundAddr.ss_family == AF_INET) {
+                const auto* v4 = reinterpret_cast<const struct sockaddr_in*>(&boundAddr);
+                if (actualPort) {
+                    *actualPort = ntohs(v4->sin_port);
+                }
+            } else if (boundAddr.ss_family == AF_INET6) {
+                const auto* v6 = reinterpret_cast<const struct sockaddr_in6*>(&boundAddr);
+                if (actualPort) {
+                    *actualPort = ntohs(v6->sin6_port);
+                }
+            }
+        }
+
+        if (actualPort && *actualPort == 0) {
+            *actualPort = bindPort;
+        }
+        break;
+    }
+
+    freeaddrinfo(result);
+    return listenFd;
 }
 
 bool sendAllWithTimeout(int fd, const uint8_t* data, size_t len, int timeoutMs) {
@@ -561,7 +684,12 @@ bool AgentConnection::sendMessage(const AgentMessage& msg) {
 ClusterManager::ClusterManager()
     : listenFd_(-1)
     , port_(DEFAULT_CLUSTER_PORT)
-    , running_(false) {
+    , running_(false)
+    , reverseTunnelPortStart_(kDefaultReverseTunnelPortStart)
+    , reverseTunnelPortEnd_(kDefaultReverseTunnelPortEnd)
+    , reverseTunnelRetries_(kDefaultReverseTunnelRetries)
+    , reverseTunnelAcceptTimeoutMs_(kDefaultTunnelAcceptTimeoutMs)
+    , reverseTunnelPortCursor_(kDefaultReverseTunnelPortStart) {
 }
 
 ClusterManager::~ClusterManager() {
@@ -626,6 +754,39 @@ bool ClusterManager::initialize(const std::string& listenAddr, int port,
     
     LOG_INFO("ClusterManager initialized on " + listenAddr + ":" + std::to_string(port));
     return true;
+}
+
+void ClusterManager::setReverseTunnelOptions(int portStart, int portEnd, int retries, int acceptTimeoutMs) {
+    if (portStart <= 0 || portStart > 65535 ||
+        portEnd <= 0 || portEnd > 65535 || portStart > portEnd) {
+        LOG_WARN("Invalid reverse tunnel port range provided, fallback to defaults");
+        portStart = kDefaultReverseTunnelPortStart;
+        portEnd = kDefaultReverseTunnelPortEnd;
+    }
+    if (retries <= 0) {
+        LOG_WARN("Invalid reverse tunnel retries provided, fallback to default");
+        retries = kDefaultReverseTunnelRetries;
+    }
+    if (acceptTimeoutMs <= 0) {
+        LOG_WARN("Invalid reverse tunnel accept timeout provided, fallback to default");
+        acceptTimeoutMs = kDefaultTunnelAcceptTimeoutMs;
+    }
+
+    reverseTunnelPortStart_ = portStart;
+    reverseTunnelPortEnd_ = portEnd;
+    reverseTunnelRetries_ = retries;
+    reverseTunnelAcceptTimeoutMs_ = acceptTimeoutMs;
+    reverseTunnelPortCursor_.store(portStart);
+
+    LOG_INFO("Reverse tunnel options updated: ports=" +
+             std::to_string(reverseTunnelPortStart_) + "-" + std::to_string(reverseTunnelPortEnd_) +
+             ", retries=" + std::to_string(reverseTunnelRetries_) +
+             ", acceptTimeoutMs=" + std::to_string(reverseTunnelAcceptTimeoutMs_));
+}
+
+std::tuple<int, int, int, int> ClusterManager::getReverseTunnelOptions() const {
+    return std::make_tuple(reverseTunnelPortStart_, reverseTunnelPortEnd_,
+                           reverseTunnelRetries_, reverseTunnelAcceptTimeoutMs_);
 }
 
 bool ClusterManager::start() {
@@ -852,56 +1013,104 @@ int ClusterManager::establishForwardConnection(const std::string& agentId, int t
 
     // 优先使用 Agent 回拨通道（适配 NAT 后主机）
     if (controlConn) {
-        int listenFd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
-        if (listenFd >= 0) {
-            setReuseAddr(listenFd);
+        std::string connectBackHost = getSocketLocalIp(controlConn->getFd());
+        if (isWildcardAddress(connectBackHost) && !isWildcardAddress(listenAddr_)) {
+            connectBackHost = listenAddr_;
+        }
 
-            struct sockaddr_in listenAddr;
-            memset(&listenAddr, 0, sizeof(listenAddr));
-            listenAddr.sin_family = AF_INET;
-            listenAddr.sin_addr.s_addr = htonl(INADDR_ANY);
-            listenAddr.sin_port = htons(0);  // 自动分配端口
+        const int configuredRange = reverseTunnelPortEnd_ - reverseTunnelPortStart_ + 1;
+        const int portRangeSize = configuredRange > 0 ? configuredRange : 1;
+        const int maxAttempts = reverseTunnelRetries_ > 0 ? reverseTunnelRetries_ : 1;
+        bool reverseTunnelEstablished = false;
+        std::string lastReverseFailure = "unknown";
 
-            if (bind(listenFd, reinterpret_cast<struct sockaddr*>(&listenAddr), sizeof(listenAddr)) == 0 &&
-                listen(listenFd, 1) == 0) {
-                struct sockaddr_in boundAddr;
-                socklen_t boundLen = sizeof(boundAddr);
-                if (getsockname(listenFd, reinterpret_cast<struct sockaddr*>(&boundAddr), &boundLen) == 0) {
-                    const int connectBackPort = ntohs(boundAddr.sin_port);
-                    const std::string requestId = generateUUID();
+        for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+            const int sequence = reverseTunnelPortCursor_.fetch_add(1);
+            int offset = (sequence - reverseTunnelPortStart_) % portRangeSize;
+            if (offset < 0) {
+                offset += portRangeSize;
+            }
+            const int preferredPort = reverseTunnelPortStart_ + offset;
 
-                    std::string payload = "{";
-                    payload += "\"requestId\":\"" + requestId + "\",";
-                    payload += "\"targetHost\":\"127.0.0.1\",";
-                    payload += "\"targetPort\":" + std::to_string(targetPort) + ",";
-                    payload += "\"connectBackPort\":" + std::to_string(connectBackPort);
-                    payload += "}";
+            std::string bindHost = connectBackHost;
+            if (isWildcardAddress(bindHost)) {
+                bindHost.clear();
+            }
 
-                    const AgentMessage request =
-                        AgentMessage::create(AgentMessageType::FORWARD_REQUEST, payload);
+            int listenFd = -1;
+            int connectBackPort = 0;
+            listenFd = createTcpListener(bindHost, preferredPort, &connectBackPort);
+            if (listenFd < 0) {
+                lastReverseFailure = "listener_bind_failed";
+                LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                         std::to_string(maxAttempts) + " failed to bind callback listener for agent " +
+                         agentId + " on port " + std::to_string(preferredPort));
+                continue;
+            }
 
-                    if (controlConn->sendMessage(request)) {
-                        struct pollfd pfd{listenFd, POLLIN, 0};
-                        const int pollRet = poll(&pfd, 1, kTunnelAcceptTimeoutMs);
-                        if (pollRet > 0 && (pfd.revents & POLLIN)) {
-                            const int tunnelFd = accept4(listenFd, nullptr, nullptr, SOCK_CLOEXEC);
-                            if (tunnelFd >= 0) {
-                                setTcpNoDelay(tunnelFd);
-                                closeSocket(listenFd);
-                                LOG_INFO("Reverse tunnel established for agent " + agentId +
-                                         " requestId=" + requestId +
-                                         ", targetPort=" + std::to_string(targetPort));
-                                return tunnelFd;
-                            }
-                        }
-                    }
+            const std::string requestId = generateUUID();
+            std::string payload = "{";
+            payload += "\"requestId\":\"" + requestId + "\",";
+            payload += "\"targetHost\":\"127.0.0.1\",";
+            payload += "\"targetPort\":" + std::to_string(targetPort) + ",";
+            payload += "\"connectBackPort\":" + std::to_string(connectBackPort);
+            if (!connectBackHost.empty() && !isWildcardAddress(connectBackHost)) {
+                payload += ",\"connectBackHost\":\"" + connectBackHost + "\"";
+            }
+            payload += "}";
 
-                    LOG_WARN("Reverse tunnel request failed or timed out for agent " + agentId +
-                             ", requestId=" + requestId + ", fallback to direct connect");
+            const AgentMessage request = AgentMessage::create(AgentMessageType::FORWARD_REQUEST, payload);
+            if (!controlConn->sendMessage(request)) {
+                lastReverseFailure = "send_forward_request_failed";
+                LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                         std::to_string(maxAttempts) + " failed to send FORWARD_REQUEST for agent " + agentId +
+                         ", requestId=" + requestId + ", callbackPort=" + std::to_string(connectBackPort));
+                closeSocket(listenFd);
+                continue;
+            }
+
+            struct pollfd pfd{listenFd, POLLIN, 0};
+            const int pollRet = poll(&pfd, 1, reverseTunnelAcceptTimeoutMs_);
+            if (pollRet > 0 && (pfd.revents & POLLIN)) {
+                const int tunnelFd = accept4(listenFd, nullptr, nullptr, SOCK_CLOEXEC);
+                if (tunnelFd >= 0) {
+                    setTcpNoDelay(tunnelFd);
+                    closeSocket(listenFd);
+                    reverseTunnelEstablished = true;
+                    LOG_INFO("Reverse tunnel established for agent " + agentId +
+                             ", requestId=" + requestId +
+                             ", attempt=" + std::to_string(attempt) +
+                             ", callbackPort=" + std::to_string(connectBackPort) +
+                             ", targetPort=" + std::to_string(targetPort));
+                    return tunnelFd;
                 }
+                lastReverseFailure = "accept_failed";
+                LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                         std::to_string(maxAttempts) + " accept failed for agent " + agentId +
+                         ", requestId=" + requestId + ", callbackPort=" + std::to_string(connectBackPort) +
+                         ", error=" + std::string(strerror(errno)));
+            } else if (pollRet == 0) {
+                lastReverseFailure = "accept_timeout";
+                LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                         std::to_string(maxAttempts) + " timed out for agent " + agentId +
+                         ", requestId=" + requestId + ", callbackPort=" + std::to_string(connectBackPort) +
+                         ", timeoutMs=" + std::to_string(reverseTunnelAcceptTimeoutMs_));
+            } else {
+                lastReverseFailure = "accept_poll_failed";
+                LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                         std::to_string(maxAttempts) + " poll failed for agent " + agentId +
+                         ", requestId=" + requestId + ", callbackPort=" + std::to_string(connectBackPort) +
+                         ", error=" + std::string(strerror(errno)));
             }
 
             closeSocket(listenFd);
+        }
+
+        if (!reverseTunnelEstablished) {
+            LOG_WARN("Reverse tunnel exhausted for agent " + agentId +
+                     ", retries=" + std::to_string(maxAttempts) +
+                     ", lastFailure=" + lastReverseFailure +
+                     ", fallback=direct_connect");
         }
     }
 
@@ -1326,6 +1535,7 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
         std::string host = extractJsonStringValue(payload, "targetHost");
         return host.empty() ? std::string("127.0.0.1") : host;
     }();
+    const std::string connectBackHost = extractJsonStringValue(payload, "connectBackHost");
     const int targetPort = extractJsonIntValue(payload, "targetPort", 22);
     const int connectBackPort = extractJsonIntValue(payload, "connectBackPort", 0);
 
@@ -1335,9 +1545,9 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
     }
 
     const std::string requestLabel = requestId.empty() ? generateUUID() : requestId;
-    const std::string serverAddr = serverAddr_;
+    const std::string callbackHost = connectBackHost.empty() ? serverAddr_ : connectBackHost;
 
-    submitForwardTask([requestLabel, serverAddr, connectBackPort, targetHost, targetPort]() {
+    submitForwardTask([requestLabel, callbackHost, connectBackPort, targetHost, targetPort]() {
         int targetFd = connectTcpWithTimeout(targetHost, targetPort, kConnectTimeoutMs);
         if (targetFd < 0) {
             LOG_ERROR("Forward request " + requestLabel + " failed: cannot connect target " +
@@ -1345,17 +1555,17 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
             return;
         }
 
-        int tunnelFd = connectTcpWithTimeout(serverAddr, connectBackPort, kConnectTimeoutMs);
+        int tunnelFd = connectTcpWithTimeout(callbackHost, connectBackPort, kConnectTimeoutMs);
         if (tunnelFd < 0) {
             LOG_ERROR("Forward request " + requestLabel + " failed: cannot connect back to server " +
-                      serverAddr + ":" + std::to_string(connectBackPort));
+                      callbackHost + ":" + std::to_string(connectBackPort));
             closeSocket(targetFd);
             return;
         }
 
         setTcpNoDelay(targetFd);
         setTcpNoDelay(tunnelFd);
-        LOG_INFO("Forward request " + requestLabel + " established: server " + serverAddr +
+        LOG_INFO("Forward request " + requestLabel + " established: server " + callbackHost +
                  ":" + std::to_string(connectBackPort) + " <-> target " +
                  targetHost + ":" + std::to_string(targetPort));
 
@@ -1376,33 +1586,12 @@ bool ClusterAgentClient::connectToServer() {
         closeSocket(sockFd_);
     }
 
-    // 使用 getaddrinfo 进行线程安全的地址解析
-    struct addrinfo hints, *result = nullptr;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;  // IPv4
-    hints.ai_socktype = SOCK_STREAM;
-
-    int gaiRet = getaddrinfo(serverAddr_.c_str(), std::to_string(serverPort_).c_str(), &hints, &result);
-    if (gaiRet != 0 || !result) {
-        LOG_ERROR("Failed to resolve server address: " + serverAddr_ + " - " + std::string(gai_strerror(gaiRet)));
-        return false;
-    }
-
-    sockFd_ = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    sockFd_ = connectTcpWithTimeout(serverAddr_, serverPort_, kConnectTimeoutMs);
     if (sockFd_ < 0) {
-        LOG_ERROR("Failed to create socket");
-        freeaddrinfo(result);
+        LOG_ERROR("Failed to connect to server: " + serverAddr_ + ":" + std::to_string(serverPort_));
         return false;
     }
 
-    if (::connect(sockFd_, result->ai_addr, result->ai_addrlen) < 0) {
-        LOG_ERROR("Failed to connect to server");
-        closeSocket(sockFd_);
-        freeaddrinfo(result);
-        return false;
-    }
-
-    freeaddrinfo(result);
     setTcpNoDelay(sockFd_);
     connected_ = true;
     LOG_INFO("Connected to server: " + serverAddr_ + ":" + std::to_string(serverPort_));

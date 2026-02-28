@@ -259,7 +259,7 @@ docker exec -it jump-client bash
 ### 完整测试
 
 ```bash
-# 一键执行完整 E2E（构建 + 启动 + 认证/权限/会话/子节点 CRUD）
+# 一键执行完整 E2E（构建 + 启动 + 认证/权限/NAT 回拨/会话/子节点 CRUD）
 # 默认在退出时自动清理容器与网络
 ./docker/test.sh
 

@@ -151,13 +151,16 @@ User <- Jump Server <- Reverse Tunnel <- Agent <- Target Service
   "requestId": "uuid",
   "targetHost": "127.0.0.1",
   "targetPort": 22,
-  "connectBackPort": 39541
+  "connectBackPort": 38001,
+  "connectBackHost": "198.51.100.10"
 }
 ```
 
 说明：
 - `targetHost/targetPort`：Agent 本地要连接的目标服务
-- `connectBackPort`：服务端临时监听端口，Agent 用于回拨
+- `connectBackPort`：服务端在配置端口池内选择的回拨监听端口
+- `connectBackHost`：可选，服务端回拨地址（支持 IPv4/IPv6）；缺省时 Agent 使用控制连接的服务端地址
+- 服务端会按 `reverse_tunnel_retries` 次数重试不同端口，超时后回退直连模式
 
 ## 服务器与 Agent 通信示例
 
