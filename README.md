@@ -50,6 +50,8 @@ make -j"$(nproc)"
 
 ## 启动方式
 
+README 中服务端命令统一使用二进制名 `ssh_jump_server`（如果你本机包装成 `jumper-server`，参数含义一致）。
+
 `ssh_jump_server` 默认读取 `/etc/ssh_jump/config.conf`，`-c` 只是覆盖默认路径。
 
 ```bash
@@ -63,14 +65,17 @@ make -j"$(nproc)"
 ./ssh_jump_server -c /etc/ssh_jump/config.conf -d
 ```
 
-CLI 参数：
-- `-c, --config <path>`
-- `-p, --port <port>`
-- `-a, --agent-port <port>`
-- `-d, --daemon`
-- `-v, --verbose`
-- `-h, --help`
-- `-V, --version`
+### `ssh_jump_server` 命令行参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `-c, --config <path>` | `/etc/ssh_jump/config.conf` | 指定配置文件路径 |
+| `-p, --port <port>` | `2222` | 覆盖 SSH 监听端口 |
+| `-a, --agent-port <port>` | `8888` | 覆盖 Agent 集群监听端口 |
+| `-d, --daemon` | `false` | 以守护进程方式运行 |
+| `-v, --verbose` | `false` | 输出 debug 级别日志 |
+| `-h, --help` | - | 显示帮助 |
+| `-V, --version` | - | 显示版本 |
 
 ## 最小配置示例
 
