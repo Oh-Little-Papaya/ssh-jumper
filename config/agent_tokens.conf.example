@@ -1,0 +1,106 @@
+# Agent Token 配置文件
+# 格式支持两种方式:
+#
+# 方式1: 简单格式 (向后兼容)
+# agent_id = token
+#
+# 方式2: 完整格式 (推荐)
+# [agent:agent_id]
+# token = xxx
+# ip = xxx.xxx.xxx.xxx
+# hostname = xxx
+# service = name:type:port
+#
+# 安全提示:
+# 1. 此文件应设置为仅 root 可读: chmod 600 /etc/ssh_jump/agent_tokens.conf
+# 2. Token 应使用强随机字符串，建议长度 >= 32
+# 3. 定期更换 token，尤其是怀疑泄露时
+# 4. 每个内网机器应有独立的 token
+
+# ============================================
+# Web 服务器
+# ============================================
+[agent:web-server-01]
+token = ws01-7a8b9c2d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0
+ip = 192.168.1.101
+hostname = web-server-01
+service = ssh:ssh:22
+service = web:http:80
+
+[agent:web-server-02]
+token = ws02-0u1v2w3x4y5z6a7b8c9d0e1f2g3h4i5j6k7l8m9n0
+ip = 192.168.1.102
+hostname = web-server-02
+service = ssh:ssh:22
+service = web:http:80
+
+[agent:web-server-03]
+token = ws03-1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7e8f9g0h1
+ip = 192.168.1.103
+hostname = web-server-03
+service = ssh:ssh:22
+
+# ============================================
+# API 服务器
+# ============================================
+[agent:api-server-01]
+token = api01-2i3j4k5l6m7n8o9p0q1r2s3t4u5v6w7x8y9z0a1b2
+ip = 192.168.1.201
+hostname = api-server-01
+service = ssh:ssh:22
+service = api:http:8080
+
+[agent:api-server-02]
+token = api02-3c4d5e6f7g8h9i0j1k2l3m4n5o6p7q8r9s0t1u2v
+ip = 192.168.1.202
+hostname = api-server-02
+service = ssh:ssh:22
+service = api:http:8080
+
+# ============================================
+# 数据库服务器
+# ============================================
+[agent:db-server-01]
+token = db01-4w5x6y7z8a9b0c1d2e3f4g5h6i7j8k9l0m1n2o3p4q
+ip = 192.168.1.301
+hostname = db-server-01
+service = ssh:ssh:22
+service = mysql:mysql:3306
+
+[agent:db-server-02]
+token = db02-5r6s7t8u9v0w1x2y3z4a5b6c7d8e9f0g1h2i3j4k5l
+ip = 192.168.1.302
+hostname = db-server-02
+service = ssh:ssh:22
+service = mysql:mysql:3306
+
+[agent:db-replica-01]
+token = dbr01-6m7n8o9p0q1r2s3t4u5v6w7x8y9z0a1b2c3d4e5f6
+ip = 192.168.1.303
+hostname = db-replica-01
+service = ssh:ssh:22
+service = mysql:mysql:3306
+
+# ============================================
+# 缓存服务器
+# ============================================
+[agent:redis-01]
+token = rd01-7g8h9i0j1k2l3m4n5o6p7q8r9s0t1u2v3w4x5y6z7a8b9
+ip = 192.168.1.401
+hostname = redis-01
+service = ssh:ssh:22
+service = redis:redis:6379
+
+[agent:redis-02]
+token = rd02-8c0d1e2f3g4h5i6j7k8l9m0n1o2p3q4r5s6t7u8v9w0x
+ip = 192.168.1.402
+hostname = redis-02
+service = ssh:ssh:22
+service = redis:redis:6379
+
+# ============================================
+# 简单格式示例 (向后兼容)
+# 注意: 简单格式不支持预配置 IP，Agent 必须自行上报正确的 IP
+# ============================================
+# legacy-server-01 = legacy-token-01
+# legacy-server-02 = legacy-token-02

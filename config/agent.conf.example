@@ -1,0 +1,50 @@
+# SSH Jump Agent 配置文件
+# 复制到 /etc/ssh_jump/agent.conf 使用
+
+[server]
+# 跳板机服务器地址
+address = jump.example.com
+
+# 跳板机集群端口
+port = 8888
+
+[agent]
+# Agent ID (唯一标识，建议与主机名一致)
+id = web-server-01
+
+# 认证 Token (在跳板机配置的 token)
+token = your-secret-token-here
+
+# 注册的主机名
+hostname = web-server-01
+
+# 本机 IP 地址 (用于注册到跳板机)
+# 如果不设置，会自动检测
+# 建议在内网环境或有多网卡时手动设置
+ip = 192.168.1.101
+
+# 心跳间隔 (秒)
+heartbeat_interval = 30
+
+# 自动重连间隔 (秒)
+reconnect_interval = 5
+
+[services]
+# 暴露的服务列表 (格式: name:type:port:description)
+# 可以配置多个服务
+
+# SSH 服务 (必需)
+expose = ssh:ssh:22:SSH远程登录
+
+# HTTP 服务 (可选)
+# expose = web:http:80:Web服务
+
+# MySQL 服务 (可选)
+# expose = mysql:mysql:3306:数据库服务
+
+[metadata]
+# 附加元数据 (键值对)
+os = Linux
+location = Beijing
+environment = production
+owner = ops-team

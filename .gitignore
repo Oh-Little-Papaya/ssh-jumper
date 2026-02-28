@@ -1,0 +1,10 @@
+build/
+build_nosys/
+build_verify/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+*.o
+*.a
+*.so
+*.log

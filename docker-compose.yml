@@ -1,0 +1,166 @@
+name: ssh-jump
+
+services:
+  # ============================================
+  # SSH Jump Server (跳板机服务器)
+  # ============================================
+  jump-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: server
+    image: ssh-jump-server:latest
+    container_name: jump-server
+    hostname: jump-server
+    networks:
+      - jump-network
+    ports:
+      - "2222:2222"  # SSH 用户连接端口
+      - "8888:8888"  # Agent 注册端口
+    volumes:
+      - ./docker/server-config:/etc/ssh_jump
+      - server-logs:/var/log/ssh_jump
+    environment:
+      - LOG_LEVEL=debug
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ============================================
+  # SSH Jump Agent (被管理的资产)
+  # ============================================
+  
+  # Web 服务器 - 可被所有用户访问
+  web-server-01:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: agent
+    image: ssh-jump-agent:latest
+    container_name: web-server-01
+    hostname: web-server-01
+    networks:
+      - jump-network
+    environment:
+      - AGENT_ID=web-server-01
+      - AGENT_TOKEN=ws01-secret-token-2024
+      - SERVER_HOST=jump-server
+      - SERVER_PORT=8888
+      - AGENT_HOSTNAME=web-server-01
+      - SSH_PORT=22
+    depends_on:
+      jump-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # API 服务器 - 可被所有用户访问
+  api-server-01:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: agent
+    image: ssh-jump-agent:latest
+    container_name: api-server-01
+    hostname: api-server-01
+    networks:
+      - jump-network
+    environment:
+      - AGENT_ID=api-server-01
+      - AGENT_TOKEN=api01-secret-token-2024
+      - SERVER_HOST=jump-server
+      - SERVER_PORT=8888
+      - AGENT_HOSTNAME=api-server-01
+      - SSH_PORT=22
+    depends_on:
+      jump-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 数据库服务器 - developer 不可访问
+  db-server-01:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: agent
+    image: ssh-jump-agent:latest
+    container_name: db-server-01
+    hostname: db-server-01
+    networks:
+      - jump-network
+    environment:
+      - AGENT_ID=db-server-01
+      - AGENT_TOKEN=db01-secret-token-2024
+      - SERVER_HOST=jump-server
+      - SERVER_PORT=8888
+      - AGENT_HOSTNAME=db-server-01
+      - SSH_PORT=22
+    depends_on:
+      jump-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 缓存服务器 - developer 不可访问
+  cache-server-01:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: agent
+    image: ssh-jump-agent:latest
+    container_name: cache-server-01
+    hostname: cache-server-01
+    networks:
+      - jump-network
+    environment:
+      - AGENT_ID=cache-server-01
+      - AGENT_TOKEN=cs01-secret-token-2024
+      - SERVER_HOST=jump-server
+      - SERVER_PORT=8888
+      - AGENT_HOSTNAME=cache-server-01
+      - SSH_PORT=22
+    depends_on:
+      jump-server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ============================================
+  # SSH Jump Client (用户客户端)
+  # ============================================
+  jump-client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: client
+    image: ssh-jump-client:latest
+    container_name: jump-client
+    hostname: jump-client
+    networks:
+      - jump-network
+    environment:
+      - JUMP_HOST=jump-server
+      - JUMP_PORT=2222
+      - JUMP_USER=admin
+      - JUMP_PASS=admin123
+    depends_on:
+      - jump-server
+      - web-server-01
+      - api-server-01
+      - db-server-01
+      - cache-server-01
+    stdin_open: true
+    tty: true
+    command: ["/bin/bash", "-c", "echo 'Client ready. Run: client-test.sh'; sleep infinity"]
+
+networks:
+  jump-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
+
+volumes:
+  server-logs:
+    driver: local

@@ -1,0 +1,22 @@
+# SSH Jump 子节点配置示例
+
+[node:edge-gw-01]
+name = Edge Gateway 01
+public_address = 203.0.113.10
+ssh_port = 2222
+cluster_port = 8888
+description = US-West Public Edge
+enabled = true
+meta.region = us-west
+meta.env = prod
+
+[node:edge-gw-02]
+name = Edge Gateway 02
+public_address = 198.51.100.20
+ssh_port = 2222
+cluster_port = 8888
+description = AP-South Public Edge
+enabled = true
+meta.region = ap-south
+meta.env = prod
+

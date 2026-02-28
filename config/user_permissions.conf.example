@@ -1,0 +1,95 @@
+# 用户权限配置文件
+# 格式: [user:username]  followed by key=value pairs
+
+# ============================================
+# 管理员 - 拥有所有权限
+# ============================================
+[user:admin]
+# 允许访问所有资产
+allow_all = true
+
+# 最大并发会话数 (0 = 无限制)
+max_sessions = 0
+
+# 是否需要审批 (管理员通常不需要)
+need_approval = false
+
+# ============================================
+# 开发者 - 只能访问 Web 和 API 服务器
+# ============================================
+[user:developer]
+# 允许访问的主机名模式 (通配符支持)
+allowed_patterns = web-*,api-*,app-*
+
+# 明确允许的资产ID (可选)
+# allowed_assets = web-01,web-02,api-01
+
+# 明确拒绝的资产 (优先级高于允许)
+denied_assets = web-admin
+
+# 最大并发会话数
+max_sessions = 5
+
+# 是否需要审批
+need_approval = false
+
+# ============================================
+# DBA - 只能访问数据库服务器
+# ============================================
+[user:dba]
+# 允许访问的主机名模式
+allowed_patterns = db-*,redis-*,mysql-*,postgres-*
+
+# 明确拒绝的高权限资产
+denied_assets = db-admin,db-master
+
+# 最大并发会话数
+max_sessions = 10
+
+# 需要审批才能连接生产数据库
+need_approval = true
+
+# ============================================
+# 运维工程师 - 可以访问大部分服务器
+# ============================================
+[user:ops]
+# 允许访问的主机名模式
+allowed_patterns = web-*,api-*,db-*,redis-*,mq-*,es-*
+
+# 明确拒绝的资产
+denied_assets = db-admin,core-router
+
+# 最大并发会话数
+max_sessions = 20
+
+# 不需要审批
+need_approval = false
+
+# ============================================
+# 只读用户 - 只能查看日志等
+# ============================================
+[user:readonly]
+# 只允许访问日志服务器
+allowed_patterns = log-*,monitor-*
+
+# 最大并发会话数
+max_sessions = 3
+
+# 不需要审批
+need_approval = false
+
+# ============================================
+# 临时用户 - 严格限制
+# ============================================
+[user:temp]
+# 只允许访问测试环境
+allowed_patterns = test-*,dev-*
+
+# 明确拒绝生产环境
+denied_assets = web-prod,db-prod,api-prod
+
+# 最大并发会话数
+max_sessions = 2
+
+# 需要审批
+need_approval = true
