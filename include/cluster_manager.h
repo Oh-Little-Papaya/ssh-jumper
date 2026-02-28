@@ -249,6 +249,9 @@ public:
 
     // 加载Agent token配置
     bool loadAgentTokens(const std::string& configPath);
+
+    // 直接设置/覆盖单个 Agent token（CLI 场景）
+    void upsertAgentToken(const std::string& agentId, const std::string& token);
     
 private:
     // 启动心跳检查

@@ -19,6 +19,9 @@
 #include "config_manager.h"
 
 #include <getopt.h>
+#include <iomanip>
+#include <openssl/sha.h>
+#include <sstream>
 
 using namespace sshjump;
 
@@ -40,10 +43,14 @@ void printUsage(const char* program) {
               << "      --listen-address <addr>            SSH listen address (default: 0.0.0.0)\n"
               << "      --cluster-listen-address <addr>    Cluster listen address (default: 0.0.0.0)\n"
               << "      --host-key-path <path>             Host key path (default: /etc/ssh_jump/host_key)\n"
-              << "      --users-file <path>                Users file (default: /etc/ssh_jump/users.conf)\n"
-              << "      --agent-token-file <path>          Agent token file (default: /etc/ssh_jump/agent_tokens.conf)\n"
-              << "      --permissions-file <path>          Permissions file (default: /etc/ssh_jump/user_permissions.conf)\n"
-              << "      --child-nodes-file <path>          Child nodes file (default: /etc/ssh_jump/child_nodes.conf)\n"
+              << "      --users-file <path>                Users file (optional)\n"
+              << "      --user <name:password>             Add user from CLI (repeatable)\n"
+              << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
+              << "      --agent-token-file <path>          Agent token file (optional)\n"
+              << "      --agent-token <id:token>           Add agent token from CLI (repeatable)\n"
+              << "      --permissions-file <path>          Permissions file (optional)\n"
+              << "      --child-nodes-file <path>          Child nodes file (optional)\n"
+              << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable)\n"
               << "      --default-target-user <user>       Default target SSH user (default: root)\n"
               << "      --default-target-password <pass>   Default target SSH password\n"
               << "      --default-target-private-key <path>    Default target private key path\n"
@@ -63,9 +70,7 @@ void printUsage(const char* program) {
               << "  3. Interactive: ssh -p 2222 admin@jump.example.com\n"
               << "  4. Quick:     ssh -p 2222 admin@jump.example.com @1\n"
               << "\nExamples:\n"
-              << "  " << program << " -p 2222 -a 8888 --users-file /etc/ssh_jump/users.conf \\\n"
-              << "      --agent-token-file /etc/ssh_jump/agent_tokens.conf \\\n"
-              << "      --permissions-file /etc/ssh_jump/user_permissions.conf\n"
+              << "  " << program << " -p 2222 -a 8888 --user admin:admin123 --agent-token web-01:token\n"
               << "  " << program << " -d --host-key-path /etc/ssh_jump/host_key\n";
 }
 
@@ -143,6 +148,54 @@ void removePidFile(const std::string& path) {
     unlink(path.c_str());
 }
 
+bool splitSpec(const std::string& spec, char delimiter, std::string& left, std::string& right) {
+    size_t pos = spec.find(delimiter);
+    if (pos == std::string::npos || pos == 0 || pos + 1 >= spec.size()) {
+        return false;
+    }
+    left = trimString(spec.substr(0, pos));
+    right = trimString(spec.substr(pos + 1));
+    return !left.empty() && !right.empty();
+}
+
+std::string sha256Hex(const std::string& plainText) {
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(reinterpret_cast<const unsigned char*>(plainText.data()), plainText.size(), hash);
+
+    std::ostringstream oss;
+    oss << std::hex << std::setfill('0');
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
+        oss << std::setw(2) << static_cast<int>(hash[i]);
+    }
+    return oss.str();
+}
+
+bool parseChildNodeSpec(const std::string& spec, ChildNodeInfo& node) {
+    auto parts = splitString(spec, ':');
+    if (parts.size() < 2) {
+        return false;
+    }
+
+    node = ChildNodeInfo();
+    node.nodeId = trimString(parts[0]);
+    node.publicAddress = trimString(parts[1]);
+
+    if (parts.size() >= 3 && !trimString(parts[2]).empty()) {
+        node.sshPort = safeStringToInt(trimString(parts[2]), DEFAULT_SSH_PORT);
+    }
+    if (parts.size() >= 4 && !trimString(parts[3]).empty()) {
+        node.clusterPort = safeStringToInt(trimString(parts[3]), DEFAULT_CLUSTER_PORT);
+    }
+    if (parts.size() >= 5) {
+        node.name = trimString(parts[4]);
+    }
+    if (node.name.empty()) {
+        node.name = node.nodeId;
+    }
+
+    return node.isValid();
+}
+
 int main(int argc, char* argv[]) {
     // 默认配置（纯命令行参数驱动）
     int sshPort = DEFAULT_SSH_PORT;
@@ -150,10 +203,14 @@ int main(int argc, char* argv[]) {
     std::string sshListenAddr = "0.0.0.0";
     std::string clusterListenAddr = "0.0.0.0";
     std::string hostKeyPath = "/etc/ssh_jump/host_key";
-    std::string usersFile = "/etc/ssh_jump/users.conf";
-    std::string agentTokenFile = "/etc/ssh_jump/agent_tokens.conf";
-    std::string permissionsFile = "/etc/ssh_jump/user_permissions.conf";
-    std::string childNodesFile = "/etc/ssh_jump/child_nodes.conf";
+    std::string usersFile;
+    std::string agentTokenFile;
+    std::string permissionsFile;
+    std::string childNodesFile;
+    std::vector<std::pair<std::string, std::string>> cliUsers;
+    std::vector<std::pair<std::string, std::string>> cliUsersHash;
+    std::vector<std::pair<std::string, std::string>> cliAgentTokens;
+    std::vector<ChildNodeInfo> cliChildNodes;
     std::string defaultTargetUser = "root";
     std::string defaultTargetPassword;
     std::string defaultTargetPrivateKey;
@@ -171,9 +228,13 @@ int main(int argc, char* argv[]) {
         OPT_CLUSTER_LISTEN_ADDRESS,
         OPT_HOST_KEY_PATH,
         OPT_USERS_FILE,
+        OPT_USER,
+        OPT_USER_HASH,
         OPT_AGENT_TOKEN_FILE,
+        OPT_AGENT_TOKEN,
         OPT_PERMISSIONS_FILE,
         OPT_CHILD_NODES_FILE,
+        OPT_CHILD_NODE,
         OPT_DEFAULT_TARGET_USER,
         OPT_DEFAULT_TARGET_PASSWORD,
         OPT_DEFAULT_TARGET_PRIVATE_KEY,
@@ -193,9 +254,13 @@ int main(int argc, char* argv[]) {
         {"cluster-listen-address", required_argument, nullptr, OPT_CLUSTER_LISTEN_ADDRESS},
         {"host-key-path", required_argument, nullptr, OPT_HOST_KEY_PATH},
         {"users-file", required_argument, nullptr, OPT_USERS_FILE},
+        {"user", required_argument, nullptr, OPT_USER},
+        {"user-hash", required_argument, nullptr, OPT_USER_HASH},
         {"agent-token-file", required_argument, nullptr, OPT_AGENT_TOKEN_FILE},
+        {"agent-token", required_argument, nullptr, OPT_AGENT_TOKEN},
         {"permissions-file", required_argument, nullptr, OPT_PERMISSIONS_FILE},
         {"child-nodes-file", required_argument, nullptr, OPT_CHILD_NODES_FILE},
+        {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
         {"default-target-user", required_argument, nullptr, OPT_DEFAULT_TARGET_USER},
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
         {"default-target-private-key", required_argument, nullptr, OPT_DEFAULT_TARGET_PRIVATE_KEY},
@@ -241,15 +306,55 @@ int main(int argc, char* argv[]) {
             case OPT_USERS_FILE:
                 usersFile = optarg;
                 break;
+            case OPT_USER: {
+                std::string username;
+                std::string password;
+                if (!splitSpec(optarg, ':', username, password)) {
+                    std::cerr << "Invalid --user format, expected name:password, got: " << optarg << std::endl;
+                    return 1;
+                }
+                cliUsers.emplace_back(username, password);
+                break;
+            }
+            case OPT_USER_HASH: {
+                std::string username;
+                std::string hashValue;
+                if (!splitSpec(optarg, ':', username, hashValue)) {
+                    std::cerr << "Invalid --user-hash format, expected name:hash, got: " << optarg << std::endl;
+                    return 1;
+                }
+                cliUsersHash.emplace_back(username, hashValue);
+                break;
+            }
             case OPT_AGENT_TOKEN_FILE:
                 agentTokenFile = optarg;
                 break;
+            case OPT_AGENT_TOKEN: {
+                std::string agentId;
+                std::string token;
+                if (!splitSpec(optarg, ':', agentId, token)) {
+                    std::cerr << "Invalid --agent-token format, expected id:token, got: " << optarg << std::endl;
+                    return 1;
+                }
+                cliAgentTokens.emplace_back(agentId, token);
+                break;
+            }
             case OPT_PERMISSIONS_FILE:
                 permissionsFile = optarg;
                 break;
             case OPT_CHILD_NODES_FILE:
                 childNodesFile = optarg;
                 break;
+            case OPT_CHILD_NODE: {
+                ChildNodeInfo node;
+                if (!parseChildNodeSpec(optarg, node)) {
+                    std::cerr << "Invalid --child-node format, expected id:addr[:ssh[:cluster[:name]]], got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                cliChildNodes.push_back(node);
+                break;
+            }
             case OPT_DEFAULT_TARGET_USER:
                 defaultTargetUser = optarg;
                 break;
@@ -365,10 +470,40 @@ int main(int argc, char* argv[]) {
         config.management.childNodesFile = childNodesFile;
     }
 
-    if (!configManager.loadUsers(usersFile)) {
-        LOG_FATAL("Failed to load users file: " + usersFile);
-        ssh_finalize();
-        return 1;
+    if (!usersFile.empty()) {
+        if (!configManager.loadUsers(usersFile)) {
+            LOG_WARN("Failed to load users file from --users-file: " + usersFile);
+        } else {
+            LOG_INFO("Users loaded from --users-file: " + usersFile);
+        }
+    }
+
+    {
+        auto& config = configManager.getServerConfig();
+
+        for (const auto& userSpec : cliUsers) {
+            UserAuthInfo user;
+            user.username = userSpec.first;
+            user.passwordHash = sha256Hex(userSpec.second);
+            user.enabled = true;
+            config.users[user.username] = user;
+            LOG_INFO("Loaded CLI user (plain password): " + user.username);
+        }
+
+        for (const auto& userSpec : cliUsersHash) {
+            UserAuthInfo user;
+            user.username = userSpec.first;
+            user.passwordHash = userSpec.second;
+            user.enabled = true;
+            config.users[user.username] = user;
+            LOG_INFO("Loaded CLI user-hash: " + user.username);
+        }
+
+        if (config.users.empty()) {
+            LOG_FATAL("No users configured. Provide --user / --user-hash or --users-file.");
+            ssh_finalize();
+            return 1;
+        }
     }
 
     if (!configManager.validate()) {
@@ -424,8 +559,27 @@ int main(int argc, char* argv[]) {
         clusterConfig.reverseTunnelRetries,
         clusterConfig.reverseTunnelAcceptTimeoutMs);
     
-    // 加载 Agent token 配置
-    clusterManager->loadAgentTokens(clusterConfig.agentTokenFile);
+    // 加载 Agent token（文件可选，支持纯 CLI 注入）
+    bool hasAgentTokens = false;
+    if (!clusterConfig.agentTokenFile.empty()) {
+        if (clusterManager->loadAgentTokens(clusterConfig.agentTokenFile)) {
+            hasAgentTokens = true;
+            LOG_INFO("Agent tokens loaded from file: " + clusterConfig.agentTokenFile);
+        } else {
+            LOG_WARN("Failed to load --agent-token-file: " + clusterConfig.agentTokenFile);
+        }
+    }
+    for (const auto& tokenSpec : cliAgentTokens) {
+        clusterManager->upsertAgentToken(tokenSpec.first, tokenSpec.second);
+        hasAgentTokens = true;
+        LOG_INFO("Loaded CLI agent-token for id: " + tokenSpec.first);
+    }
+    if (!hasAgentTokens) {
+        LOG_FATAL("No agent tokens configured. Provide --agent-token or --agent-token-file.");
+        removePidFile(pidFile);
+        ssh_finalize();
+        return 1;
+    }
     
     if (!clusterManager->start()) {
         LOG_FATAL("Failed to start cluster manager");
@@ -443,12 +597,42 @@ int main(int argc, char* argv[]) {
     // 创建并加载子节点注册表（公网管理节点配置）
     auto nodeRegistry = std::make_shared<ChildNodeRegistry>();
     const std::string nodeFilePath = configManager.getServerConfig().management.childNodesFile;
-    nodeRegistry->loadFromFile(nodeFilePath);
-    LOG_INFO("Child node registry ready, file=" + nodeFilePath +
-             ", count=" + std::to_string(nodeRegistry->size()));
+    if (!nodeFilePath.empty()) {
+        if (nodeRegistry->loadFromFile(nodeFilePath)) {
+            LOG_INFO("Child node registry loaded from file: " + nodeFilePath);
+        } else {
+            LOG_WARN("Failed to load --child-nodes-file: " + nodeFilePath);
+        }
+    }
+    for (const auto& node : cliChildNodes) {
+        if (!nodeRegistry->createNode(node, true)) {
+            LOG_WARN("Failed to create CLI child node: " + node.nodeId);
+        }
+    }
+    LOG_INFO("Child node registry ready, count=" + std::to_string(nodeRegistry->size()));
     
-    // 加载用户权限配置
-    assetManager->loadUserPermissions(configManager.getServerConfig().assets.permissionsFile);
+    // 加载用户权限配置（文件可选；无文件时默认 allow_all）
+    bool permissionsLoaded = false;
+    const std::string permissionPath = configManager.getServerConfig().assets.permissionsFile;
+    if (!permissionPath.empty()) {
+        permissionsLoaded = assetManager->loadUserPermissions(permissionPath);
+        if (!permissionsLoaded) {
+            LOG_WARN("Failed to load --permissions-file: " + permissionPath);
+        }
+    }
+    if (!permissionsLoaded) {
+        const auto& users = configManager.getServerConfig().users;
+        for (const auto& pair : users) {
+            if (!pair.second.enabled) {
+                continue;
+            }
+            UserPermission permission;
+            permission.username = pair.first;
+            permission.allowAll = true;
+            assetManager->upsertUserPermission(permission);
+        }
+        LOG_WARN("No permission file configured, defaulting to allow_all for all configured users");
+    }
     
     // 创建并启动 SSH 服务器
     auto sshServer = std::make_unique<SSHServer>();

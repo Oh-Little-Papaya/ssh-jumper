@@ -94,6 +94,9 @@ public:
     
     // 加载用户权限配置
     bool loadUserPermissions(const std::string& configPath);
+
+    // 直接设置/覆盖单个用户权限（CLI 场景）
+    void upsertUserPermission(const UserPermission& permission);
     
     // 获取用户权限
     std::optional<UserPermission> getUserPermission(const std::string& username);

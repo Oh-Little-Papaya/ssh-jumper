@@ -51,28 +51,11 @@ cmake --build build -j"$(nproc)"
 
 ## 2) 启动 jump-server
 
-先准备运行文件:
+只准备主机密钥即可（不需要 `users.conf / agent_tokens.conf / user_permissions.conf`）:
 
 ```bash
 sudo mkdir -p /etc/ssh_jump /var/log/ssh_jump
 sudo ssh-keygen -t rsa -b 4096 -f /etc/ssh_jump/host_key -N ""
-
-# 创建登录用户（写入 /etc/ssh_jump/users.conf）
-./build/ssh_jump_user_tool \
-  --users-file /etc/ssh_jump/users.conf \
-  --create-user admin \
-  --password 'ChangeMe123!'
-
-# Agent token 文件
-cat <<'EOF' | sudo tee /etc/ssh_jump/agent_tokens.conf
-web-server-01 = ws01-secret-token
-EOF
-
-# 用户授权文件
-cat <<'EOF' | sudo tee /etc/ssh_jump/user_permissions.conf
-[user:admin]
-allow_all = true
-EOF
 ```
 
 启动:
@@ -84,15 +67,17 @@ EOF
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
   --host-key-path /etc/ssh_jump/host_key \
-  --users-file /etc/ssh_jump/users.conf \
-  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
-  --permissions-file /etc/ssh_jump/user_permissions.conf \
-  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --user admin:ChangeMe123! \
+  --agent-token web-server-01:ws01-secret-token \
   --default-target-user root \
+  --default-target-password agent123 \
   --max-connections-per-minute 10
 ```
 
-不要再使用旧命令：`./ssh_jump_server -c /etc/ssh_jump/config.conf`（已废弃）。
+说明：
+- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`。
+- 未提供 `--permissions-file` 时，默认对已配置用户启用 `allow_all=true`。
+- 旧命令 `./ssh_jump_server -c /etc/ssh_jump/config.conf` 已废弃。
 
 ## 3) 启动 jump-agent
 
@@ -124,10 +109,14 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 - `--listen-address` SSH 监听地址，默认 `0.0.0.0`
 - `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
 - `--host-key-path` SSH 主机私钥路径
-- `--users-file` 用户认证文件路径
-- `--agent-token-file` Agent token 文件路径
-- `--permissions-file` 用户权限文件路径
-- `--child-nodes-file` 子节点注册文件路径
+- `--users-file` 用户认证文件路径（可选）
+- `--user` 直接注入用户，格式 `name:password`，可重复
+- `--user-hash` 直接注入用户哈希，格式 `name:hash`，可重复
+- `--agent-token-file` Agent token 文件路径（可选）
+- `--agent-token` 直接注入 Agent token，格式 `id:token`，可重复
+- `--permissions-file` 用户权限文件路径（可选）
+- `--child-nodes-file` 子节点注册文件路径（可选）
+- `--child-node` 直接注入子节点，格式 `id:addr[:ssh[:cluster[:name]]]`，可重复
 - `--default-target-user` 默认目标主机登录用户名，默认 `root`
 - `--default-target-password` 默认目标主机登录密码
 - `--default-target-private-key` 默认目标主机私钥路径

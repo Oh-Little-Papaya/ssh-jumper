@@ -359,6 +359,15 @@ bool AssetManager::loadUserPermissions(const std::string& configPath) {
     return true;
 }
 
+void AssetManager::upsertUserPermission(const UserPermission& permission) {
+    if (permission.username.empty()) {
+        return;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(mutex_);
+    userPermissions_[permission.username] = permission;
+}
+
 std::optional<UserPermission> AssetManager::getUserPermission(const std::string& username) {
     std::shared_lock<std::shared_mutex> lock(mutex_);
     

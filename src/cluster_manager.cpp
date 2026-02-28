@@ -1287,6 +1287,15 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
     return true;
 }
 
+void ClusterManager::upsertAgentToken(const std::string& agentId, const std::string& token) {
+    if (agentId.empty() || token.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    agentTokens_[agentId] = token;
+}
+
 void ClusterManager::checkAgentHealth() {
     std::lock_guard<std::mutex> lock(mutex_);
 
