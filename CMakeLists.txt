@@ -58,7 +58,7 @@ endif()
 # 查找 OpenSSL
 find_package(OpenSSL REQUIRED)
 
-# 可选：Folly 性能优化组件
+# Folly 性能优化组件（默认启用；启用时必须可用）
 option(ENABLE_FOLLY "Enable Folly-based performance optimizations" ON)
 set(FOLLY_ENABLED FALSE)
 set(FOLLY_USING_TARGET FALSE)
@@ -77,7 +77,7 @@ if(ENABLE_FOLLY)
             set(FOLLY_USING_TARGET TRUE)
             message(STATUS "Folly found via CMake package target: ${FOLLY_TARGET_NAME}")
         else()
-            message(WARNING "Folly package found but no imported target exported, fallback to pkg-config")
+            message(STATUS "Folly package found but no imported target exported, try pkg-config")
         endif()
     endif()
 
@@ -87,7 +87,9 @@ if(ENABLE_FOLLY)
             set(FOLLY_ENABLED TRUE)
             message(STATUS "Folly found via pkg-config: ${FOLLY_VERSION}")
         else()
-            message(WARNING "ENABLE_FOLLY=ON but Folly not found, fallback to std implementation")
+            message(FATAL_ERROR
+                "ENABLE_FOLLY=ON but Folly not found. "
+                "Install Folly dependencies first, or explicitly build with -DENABLE_FOLLY=OFF.")
         endif()
     endif()
 endif()

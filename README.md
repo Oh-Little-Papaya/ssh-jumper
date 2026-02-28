@@ -24,17 +24,12 @@ git clone <repository-url>
 cd ssh-jumper
 mkdir build && cd build
 
-# 默认启用 Folly（若缺失会回退到 std）
+# 必须启用 Folly（缺失会直接报错）
 cmake -DENABLE_FOLLY=ON ..
 make -j"$(nproc)"
 ```
 
-如果你不想用 Folly：
-
-```bash
-cmake -DENABLE_FOLLY=OFF ..
-make -j"$(nproc)"
-```
+如果 CMake 提示 `ENABLE_FOLLY=ON but Folly not found`，先安装 Folly 开发依赖后再重新编译。
 
 ---
 
@@ -174,8 +169,12 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 ## 测试（可选）
 
 ```bash
-# Docker 端到端测试
-./docker/test.sh
+# 单元测试
+cd build
+./ssh_jump_tests
+
+# 功能测试
+./ssh_jump_func_tests
 ```
 
 ---

@@ -19,7 +19,7 @@ sudo apt-get install -y cmake build-essential libssh-dev libssl-dev pkg-config
 git clone <repository-url>
 cd ssh-jumper
 mkdir build && cd build
-# 默认启用 Folly 优化
+# 默认启用 Folly 优化（默认要求必须可用）
 cmake -DENABLE_FOLLY=ON ..
 make -j$(nproc)
 
