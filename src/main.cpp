@@ -309,6 +309,11 @@ int main(int argc, char* argv[]) {
     sshServer->setClusterManager(clusterManager);
     sshServer->setAssetManager(assetManager);
     sshServer->setNodeRegistry(nodeRegistry);
+    sshServer->setConnectionRateLimitPerMinute(
+        configManager.getServerConfig().security.maxConnectionsPerMinute);
+    LOG_INFO("Connection rate limit set to " +
+             std::to_string(configManager.getServerConfig().security.maxConnectionsPerMinute) +
+             " per minute per IP");
     
     if (!sshServer->start()) {
         LOG_FATAL("Failed to start SSH server");

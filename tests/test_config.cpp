@@ -110,6 +110,7 @@ TEST(config_default_values, "配置管理") {
     ASSERT_EQ(7000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
     ASSERT_EQ("info", config.getServerConfig().logging.level);
     ASSERT_TRUE(config.getServerConfig().logging.sessionRecording);
+    ASSERT_EQ(10, config.getServerConfig().security.maxConnectionsPerMinute);
     
     return true;
 }
@@ -210,6 +211,7 @@ TEST(config_security_settings, "配置管理") {
     file << "command_audit = true\n";
     file << "allow_port_forwarding = false\n";
     file << "allow_sftp = false\n";
+    file << "max_connections_per_minute = 120\n";
     file << "users_file = /tmp/test_users_security.conf\n";
     file.close();
     
@@ -227,6 +229,7 @@ TEST(config_security_settings, "配置管理") {
     ASSERT_TRUE(config.getServerConfig().security.commandAudit);
     ASSERT_FALSE(config.getServerConfig().security.allowPortForwarding);
     ASSERT_FALSE(config.getServerConfig().security.allowSftp);
+    ASSERT_EQ(120, config.getServerConfig().security.maxConnectionsPerMinute);
     
     return true;
 }
@@ -295,6 +298,31 @@ TEST(config_cluster_reverse_tunnel_invalid_range, "配置管理") {
     file << "reverse_tunnel_port_start = 46010\n";
     file << "reverse_tunnel_port_end = 46000\n";
     file << "[security]\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_FALSE(config.validate());
+    return true;
+}
+
+TEST(config_security_rate_limit_invalid, "配置管理") {
+    const char* testFile = "/tmp/test_config_security_rate_limit_invalid.conf";
+    const char* userFile = "/tmp/test_users_security_rate_limit_invalid.conf";
+
+    std::ofstream file(testFile);
+    file << "[security]\n";
+    file << "max_connections_per_minute = 0\n";
     file << "users_file = " << userFile << "\n";
     file.close();
 

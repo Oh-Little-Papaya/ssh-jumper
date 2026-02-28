@@ -54,6 +54,7 @@ reverse_tunnel_retries = 3
 reverse_tunnel_accept_timeout_ms = 7000
 
 [security]
+max_connections_per_minute = 10
 users_file = /etc/ssh_jump/users.conf
 
 [logging]

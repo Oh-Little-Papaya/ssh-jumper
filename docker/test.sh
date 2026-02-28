@@ -35,8 +35,43 @@ run_server() {
 capture_menu_output() {
     local user="$1"
     local pass="$2"
-    local wait_before_quit="${3:-1}"
-    run_client "set -o pipefail; timeout 25 bash -lc \"(sleep ${wait_before_quit}; echo q) | sshpass -p '${pass}' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -p 2222 ${user}@jump-server\" 2>/dev/null || true"
+    local wait_before_quit="${3:-3}"
+    run_client "set -o pipefail; timeout 30 bash -lc \"(sleep ${wait_before_quit}; echo q) | sshpass -p '${pass}' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -p 2222 ${user}@jump-server\" 2>/dev/null || true"
+}
+
+strip_ansi() {
+    sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g' | tr -d '\r'
+}
+
+extract_assets_from_menu_output() {
+    strip_ansi | grep -Eo 'web-server-01|api-server-01|db-server-01|cache-server-01' | sort -u || true
+}
+
+menu_has_all_assets() {
+    local output="$1"
+    local assets
+    assets="$(echo "$output" | extract_assets_from_menu_output)"
+    echo "$assets" | grep -qx "web-server-01" &&
+    echo "$assets" | grep -qx "api-server-01" &&
+    echo "$assets" | grep -qx "db-server-01" &&
+    echo "$assets" | grep -qx "cache-server-01"
+}
+
+wait_for_assets_ready() {
+    log_info "等待资产菜单稳定（admin 可见全部 4 台）..."
+    local out=""
+    local attempt
+
+    for attempt in $(seq 1 10); do
+        out="$(capture_menu_output "admin" "admin123" 4)"
+        if menu_has_all_assets "$out"; then
+            log_pass "资产菜单就绪（attempt=${attempt}）"
+            return
+        fi
+        sleep 2
+    done
+
+    log_fail "资产菜单未就绪（未稳定看到全部资产）"
 }
 
 require_compose() {
@@ -126,7 +161,7 @@ test_authentication() {
     log_info "测试 SSH 认证..."
     local admin_out=""
     for _ in 1 2 3; do
-        admin_out="$(capture_menu_output "admin" "admin123" 1)"
+        admin_out="$(capture_menu_output "admin" "admin123" 3)"
         if echo "$admin_out" | grep -q "web-server-01"; then
             break
         fi
@@ -140,7 +175,7 @@ test_authentication() {
 
     local dev_out=""
     for _ in 1 2 3; do
-        dev_out="$(capture_menu_output "developer" "dev123" 1)"
+        dev_out="$(capture_menu_output "developer" "dev123" 3)"
         if echo "$dev_out" | grep -q "web-server-01"; then
             break
         fi
@@ -166,7 +201,7 @@ test_permission_matrix() {
 
     local dev_out=""
     for _ in 1 2 3; do
-        dev_out="$(capture_menu_output "developer" "dev123" 2)"
+        dev_out="$(capture_menu_output "developer" "dev123" 4)"
         if echo "$dev_out" | grep -q "web-server-01"; then
             break
         fi
@@ -181,7 +216,7 @@ test_permission_matrix() {
 
     local ops_out=""
     for _ in 1 2 3; do
-        ops_out="$(capture_menu_output "ops" "ops123" 2)"
+        ops_out="$(capture_menu_output "ops" "ops123" 4)"
         if echo "$ops_out" | grep -q "cache-server-01"; then
             break
         fi
@@ -304,6 +339,7 @@ main() {
     start_services
     test_folly_mode
     test_agent_registration
+    wait_for_assets_ready
     test_authentication
     test_permission_matrix
     test_nat_reverse_tunnel

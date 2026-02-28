@@ -66,6 +66,7 @@ struct SecurityConfig {
     std::vector<std::string> forbiddenCommands;
     bool allowPortForwarding = false;
     bool allowSftp = false;
+    int maxConnectionsPerMinute = 10;
     std::string usersFile = "/etc/ssh_jump/users.conf";  // 用户认证文件路径
 
     // 目标连接凭据配置（用于连接到 Agent）

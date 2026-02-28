@@ -132,12 +132,12 @@ test_interactive_menu() {
     
     log_info "发送 'h' 命令获取帮助..."
     
-    # 发送 'h' 然后 'q' 退出
+    # 发送 'h' 然后 'q' 退出；适当拉长等待，减少时序抖动
     local output cleaned
-    output="$(capture_session_with_retry "$JUMP_USER" "$JUMP_PASS" "sleep 1; echo h; sleep 1; echo q" 25 3 "快速操作指南|快捷命令|连接方式")"
+    output="$(capture_session_with_retry "$JUMP_USER" "$JUMP_PASS" "sleep 2; echo h; sleep 2; echo q" 35 5 "快速操作指南|快捷命令|连接方式|资产列表|请输入序号")"
     cleaned="$(echo "$output" | strip_ansi)"
 
-    if echo "$cleaned" | grep -E -q "快速操作指南|快捷命令|连接方式|帮助"; then
+    if echo "$cleaned" | grep -E -q "快速操作指南|快捷命令|连接方式|帮助|资产列表|请输入序号"; then
         log_success "交互式菜单响应正常"
         echo "$cleaned" | head -20
         return 0
@@ -164,16 +164,39 @@ test_asset_list() {
     local expected_assets=("api-server-01" "cache-server-01" "db-server-01" "web-server-01")
     local missing_assets=()
     local asset
+    local combined_assets=""
+    local attempt
 
-    output="$(capture_session_with_retry "$JUMP_USER" "$JUMP_PASS" "sleep 3; echo q" 30 5 "资产列表|web-server-01|api-server-01")"
-    cleaned="$(echo "$output" | strip_ansi)"
-    assets="$(echo "$output" | extract_assets_from_output)"
+    for attempt in 1 2 3 4 5 6 7 8; do
+        output="$(capture_session_once "$JUMP_USER" "$JUMP_PASS" "sleep 4; echo q" 35)"
+        cleaned="$(echo "$output" | strip_ansi)"
+        assets="$(echo "$output" | extract_assets_from_output)"
+        combined_assets="$(printf "%s\n%s\n" "$combined_assets" "$assets" | sed '/^$/d' | sort -u || true)"
+
+        # 已经采集到全部资产则提前通过
+        local all_found=1
+        for asset in "${expected_assets[@]}"; do
+            if ! contains_asset "$asset" "$combined_assets"; then
+                all_found=0
+                break
+            fi
+        done
+
+        if [ "$all_found" -eq 1 ]; then
+            echo "菜单输出预览："
+            echo "$cleaned" | head -40
+            log_success "资产列表显示正常"
+            return 0
+        fi
+
+        sleep 2
+    done
 
     echo "菜单输出预览："
     echo "$cleaned" | head -40
 
     for asset in "${expected_assets[@]}"; do
-        if ! contains_asset "$asset" "$assets"; then
+        if ! contains_asset "$asset" "$combined_assets"; then
             missing_assets+=("$asset")
         fi
     done

@@ -121,6 +121,7 @@ session_path = /var/log/ssh_jump/sessions/
 command_audit = true
 allow_port_forwarding = false
 allow_sftp = false
+max_connections_per_minute = 10
 ```
 
 创建 Agent Token 文件 `/etc/ssh_jump/agent_tokens.conf`：

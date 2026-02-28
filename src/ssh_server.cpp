@@ -11,6 +11,7 @@
 #include "ssh_server.h"
 #include "interactive_session.h"
 #include "config_manager.h"
+#include <algorithm>
 #include <sys/stat.h>
 #include <iomanip>
 
@@ -19,6 +20,15 @@ namespace sshjump {
 // ============================================
 // ConnectionRateLimiter 实现
 // ============================================
+
+ConnectionRateLimiter::ConnectionRateLimiter(int maxConnectionsPerMinute)
+    : maxConnectionsPerMinute_(std::max(1, maxConnectionsPerMinute)) {
+}
+
+void ConnectionRateLimiter::setMaxConnectionsPerMinute(int maxConnectionsPerMinute) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    maxConnectionsPerMinute_ = std::max(1, maxConnectionsPerMinute);
+}
 
 bool ConnectionRateLimiter::checkAndRecord(const std::string& clientIp) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -37,8 +47,9 @@ bool ConnectionRateLimiter::checkAndRecord(const std::string& clientIp) {
     );
 
     // 检查是否超过限制
-    if (static_cast<int>(times.size()) >= MAX_CONNECTIONS_PER_MINUTE) {
-        LOG_WARN("Rate limit exceeded for IP: " + clientIp);
+    if (static_cast<int>(times.size()) >= maxConnectionsPerMinute_) {
+        LOG_WARN("Rate limit exceeded for IP: " + clientIp +
+                 " (limit=" + std::to_string(maxConnectionsPerMinute_) + "/min)");
         return false;
     }
 

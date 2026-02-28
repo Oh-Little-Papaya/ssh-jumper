@@ -29,13 +29,15 @@ class InteractiveSession;
 // ============================================
 class ConnectionRateLimiter {
 public:
+    explicit ConnectionRateLimiter(int maxConnectionsPerMinute = 10);
+    void setMaxConnectionsPerMinute(int maxConnectionsPerMinute);
     bool checkAndRecord(const std::string& clientIp);
     void cleanup();
 
 private:
     std::unordered_map<std::string, std::vector<std::chrono::steady_clock::time_point>> connections_;
     std::mutex mutex_;
-    static constexpr int MAX_CONNECTIONS_PER_MINUTE = 10;
+    int maxConnectionsPerMinute_;
 };
 
 // ============================================
@@ -151,6 +153,11 @@ public:
     // 记录认证失败
     void recordAuthFailure(const std::string& clientIp) {
         authFailureTracker_.recordFailure(clientIp);
+    }
+
+    // 配置连接速率限制（每 IP 每分钟）
+    void setConnectionRateLimitPerMinute(int maxConnectionsPerMinute) {
+        rateLimiter_.setMaxConnectionsPerMinute(maxConnectionsPerMinute);
     }
     
 private:

@@ -102,6 +102,7 @@ session_path = /var/log/ssh_jump/sessions/
 command_audit = true
 allow_port_forwarding = false
 allow_sftp = false
+max_connections_per_minute = 10
 users_file = /etc/ssh_jump/users.conf
 ```
 
@@ -110,6 +111,7 @@ users_file = /etc/ssh_jump/users.conf
 | `command_audit` | bool | true | 是否审计用户执行的命令 |
 | `allow_port_forwarding` | bool | false | 是否允许 SSH 端口转发 |
 | `allow_sftp` | bool | false | 是否允许 SFTP 连接 |
+| `max_connections_per_minute` | int | 10 | 每个来源 IP 每分钟允许的新连接数 |
 | `users_file` | string | /etc/ssh_jump/users.conf | 用户认证配置文件路径 |
 
 ### [management] 公网管理节点配置

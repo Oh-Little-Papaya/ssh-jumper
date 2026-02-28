@@ -78,6 +78,9 @@ allow_port_forwarding = false
 # 是否允许 SCP/SFTP
 allow_sftp = false
 
+# 每个来源 IP 每分钟允许的新连接数（防暴力探测/连接洪泛）
+max_connections_per_minute = 10
+
 [management]
 # 子节点配置文件（公网管理节点的下级节点清单）
 child_nodes_file = /etc/ssh_jump/child_nodes.conf

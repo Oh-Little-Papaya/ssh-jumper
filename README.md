@@ -174,6 +174,10 @@ refresh_interval = 30
 level = info
 log_file = /var/log/ssh_jump/server.log
 audit_log = /var/log/ssh_jump/audit.log
+
+[security]
+users_file = /etc/ssh_jump/users.conf
+max_connections_per_minute = 10
 ```
 
 **Agent Token 配置** `/etc/ssh_jump/agent_tokens.conf`：
