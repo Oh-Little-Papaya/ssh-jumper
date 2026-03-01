@@ -17,7 +17,7 @@
 
 说明：
 - 不传 `--user/--user-hash` 时会自动创建默认用户 `admin/admin123`。
-- 不传 `--permission-*` 时，默认对已配置用户启用 `allow_all=true`。
+- 权限策略固定为：所有已配置用户默认可访问全部资产。
 - 主机密钥自动生成，无需提供文件路径。
 
 ### 常用参数
@@ -29,7 +29,7 @@
 - `--token` 集群共享 token（推荐）
 - `--user` 用户明文密码，格式 `name:password`，可重复
 - `--user-hash` 用户哈希密码，格式 `name:hash`，可重复
-- `--agent-token` 按节点 token（高级模式），格式 `id:token`，可重复
+- 权限策略固定为默认全资产访问，无需权限参数
 - `--child-node` 子节点，格式 `id:addr[:ssh[:cluster[:name]]]`，可重复
 - `--default-target-user` 默认目标机登录用户名
 - `--default-target-password` 默认目标机登录密码
@@ -43,17 +43,7 @@
 - `-d, --daemon` 守护进程模式
 - `-v, --verbose` 调试日志
 
-## 2. 权限参数
-
-权限通过以下参数组合配置（全部可重复）：
-
-- `--permission-allow-all <user>`
-- `--permission-allow-asset <user:asset>`
-- `--permission-allow-pattern <user:pattern>`
-- `--permission-deny-asset <user:asset>`
-- `--permission-max-sessions <user:n>`
-
-### 权限示例
+## 2. 服务端示例
 
 ```bash
 ./ssh_jump_server \
@@ -63,20 +53,7 @@
   --user admin:admin123 \
   --user developer:dev123 \
   --user ops:ops123 \
-  --agent-token web-server-01:ws01-secret-token \
-  --agent-token api-server-01:api01-secret-token \
-  --agent-token db-server-01:db01-secret-token \
-  --agent-token cache-server-01:cs01-secret-token \
-  --permission-allow-all admin \
-  --permission-allow-pattern developer:web-* \
-  --permission-allow-pattern developer:api-* \
-  --permission-max-sessions developer:3 \
-  --permission-allow-pattern ops:web-* \
-  --permission-allow-pattern ops:api-* \
-  --permission-allow-pattern ops:cache-* \
-  --permission-allow-pattern ops:db-* \
-  --permission-deny-asset ops:db-server-01 \
-  --permission-max-sessions ops:5
+  --default-target-user root
 ```
 
 ## 3. Agent 参数

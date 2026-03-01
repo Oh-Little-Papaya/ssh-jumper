@@ -78,7 +78,6 @@ rm -rf /tmp/ssh_jump_build
 建议将运行参数固定在 systemd `ExecStart`（见下一节），至少配置：
 - `--token`（集群共享 token）
 - `--user` / `--user-hash`（可选，可重复；不传会自动生成 `admin/admin123`）
-- `--permission-*`（可选，不传默认 `allow_all=true`）
 - `--child-node`（可选，可重复）
 
 手动启动示例：
@@ -91,7 +90,6 @@ rm -rf /tmp/ssh_jump_build
   --cluster-listen-address 0.0.0.0 \
   --token cluster-secret-token \
   --user admin:ChangeMe123! \
-  --permission-allow-all admin \
   --child-node public-mgr-01:jump.example.com:2222:8888:public-mgr-01 \
   --default-target-user root
 ```
@@ -109,7 +107,7 @@ After=network.target
 Type=simple
 User=sshjump
 Group=sshjump
-ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! --permission-allow-all admin --default-target-user root
+ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! --default-target-user root
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure
@@ -413,7 +411,7 @@ find /backup/ssh_jump -type d -mtime +30 -exec rm -rf {} \;
 
 ```bash
 # 前台运行，详细日志
-sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! --permission-allow-all admin -v
+sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! -v
 
 # 使用 strace
 sudo strace -f -e trace=network /opt/ssh_jump/ssh_jump_server -v

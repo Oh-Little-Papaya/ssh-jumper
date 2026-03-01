@@ -32,7 +32,7 @@ sudo make install
 无需任何配置文件。你只需要准备：
 - 集群共享 token（`--token`）
 - 登录用户（可选，不传会自动创建 `admin/admin123`）
-- 用户权限（`--permission-*`，可选；不传默认 `allow_all=true`）
+- 权限默认全资产访问（无需额外参数）
 
 ## 3. 启动服务器（1 分钟）
 
@@ -45,7 +45,6 @@ sudo ./ssh_jump_server \
   --cluster-listen-address 0.0.0.0 \
   --token my-secret-token \
   --user admin:admin123 \
-  --permission-allow-all admin \
   --default-target-user root
 
 # 或使用守护进程模式
@@ -56,7 +55,6 @@ sudo ./ssh_jump_server \
   --cluster-listen-address 0.0.0.0 \
   --token my-secret-token \
   --user admin:admin123 \
-  --permission-allow-all admin \
   --default-target-user root \
   -d
 ```

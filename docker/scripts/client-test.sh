@@ -211,15 +211,15 @@ test_asset_list() {
 }
 
 # ============================================
-# 测试 4: 用户权限验证
+# 测试 4: 用户资产可见性验证（默认全资产）
 # ============================================
 test_user_permissions() {
     echo ""
     log_info "========================================"
-    log_info "测试 4: 用户权限验证"
+    log_info "测试 4: 用户资产可见性验证"
     log_info "========================================"
     
-    # 测试 developer 用户（应该只能看到 web 和 api）
+    # 测试 developer 用户（默认可见全部资产）
     log_info "测试 developer 用户..."
     local dev_output dev_assets
     dev_output="$(capture_session_with_retry "developer" "dev123" "sleep 2; echo q" 25 4 "资产列表")"
@@ -229,12 +229,12 @@ test_user_permissions() {
     echo "$dev_assets"
 
     if ! contains_asset "web-server-01" "$dev_assets" || ! contains_asset "api-server-01" "$dev_assets" || \
-       contains_asset "db-server-01" "$dev_assets" || contains_asset "cache-server-01" "$dev_assets"; then
-        log_error "developer 权限校验失败"
+       ! contains_asset "db-server-01" "$dev_assets" || ! contains_asset "cache-server-01" "$dev_assets"; then
+        log_error "developer 资产可见性校验失败"
         return 1
     fi
 
-    # 测试 ops 用户（应该看不到 db-server-01）
+    # 测试 ops 用户（默认可见全部资产）
     log_info "测试 ops 用户..."
     local ops_output ops_assets
     ops_output="$(capture_session_with_retry "ops" "ops123" "sleep 2; echo q" 25 4 "资产列表")"
@@ -244,12 +244,12 @@ test_user_permissions() {
     echo "$ops_assets"
 
     if ! contains_asset "web-server-01" "$ops_assets" || ! contains_asset "api-server-01" "$ops_assets" || \
-       ! contains_asset "cache-server-01" "$ops_assets" || contains_asset "db-server-01" "$ops_assets"; then
-        log_error "ops 权限校验失败"
+       ! contains_asset "cache-server-01" "$ops_assets" || ! contains_asset "db-server-01" "$ops_assets"; then
+        log_error "ops 资产可见性校验失败"
         return 1
     fi
 
-    log_success "用户权限测试完成"
+    log_success "用户资产可见性测试完成"
     return 0
 }
 
@@ -343,8 +343,8 @@ show_env_info() {
     echo ""
     echo "测试用户:"
     echo "  - admin / admin123 (管理员，访问所有资产)"
-    echo "  - developer / dev123 (开发者，只能访问 web/api)"
-    echo "  - ops / ops123 (运维，访问非敏感资产)"
+    echo "  - developer / dev123 (开发者，默认访问所有资产)"
+    echo "  - ops / ops123 (运维，默认访问所有资产)"
     echo ""
     echo "Agent 资产:"
     echo "  - web-server-01"

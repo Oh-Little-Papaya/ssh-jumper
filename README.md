@@ -70,8 +70,8 @@ cmake --build build -j"$(nproc)"
 说明：
 - 只传 `--token` 即可完成集群认证配置，所有 agent 使用同一个 token 注册。
 - 未提供用户时，会自动创建默认登录用户 `admin/admin123`。
-- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`、`--permission-*`（高级用法）。
-- 未提供任何 `--permission-*` 时，默认对已配置用户启用 `allow_all=true`。
+- 可重复传 `--user`、`--user-hash`、`--child-node`。
+- 权限固定为：所有已配置用户默认可访问全部资产。
 - 旧命令 `./ssh_jump_server -c /etc/ssh_jump/config.conf` 已废弃。
 
 ## 3) 启动 jump-agent
@@ -106,12 +106,7 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 - `--token` 集群共享 token（推荐），所有 agent 复用同一 token
 - `--user` 直接注入用户，格式 `name:password`，可重复
 - `--user-hash` 直接注入用户哈希，格式 `name:hash`，可重复
-- `--agent-token` 按节点 token（高级模式），格式 `id:token`，可重复
-- `--permission-allow-all` 权限：给用户开启全资产访问，格式 `user`，可重复
-- `--permission-allow-asset` 权限：允许指定资产，格式 `user:asset`，可重复
-- `--permission-allow-pattern` 权限：允许主机名通配，格式 `user:pattern`，可重复
-- `--permission-deny-asset` 权限：拒绝指定资产，格式 `user:asset`，可重复
-- `--permission-max-sessions` 权限：设置并发会话上限，格式 `user:n`，可重复
+- 权限策略：所有已配置用户默认访问全部资产（无需权限参数）
 - `--child-node` 直接注入子节点，格式 `id:addr[:ssh[:cluster[:name]]]`，可重复
 - `--default-target-user` 默认目标主机登录用户名，默认 `root`
 - `--default-target-password` 默认目标主机登录密码

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # SSH Jump Server Docker 端到端测试脚本
-# 覆盖：镜像构建、服务启动、认证、权限、会话、子节点 CRUD、客户端自动化测试
+# 覆盖：镜像构建、服务启动、认证、资产可见性、会话、子节点 CRUD、客户端自动化测试
 
 set -euo pipefail
 
@@ -196,8 +196,8 @@ test_authentication() {
     fi
 }
 
-test_permission_matrix() {
-    log_info "测试权限矩阵..."
+test_user_asset_visibility() {
+    log_info "测试用户资产可见性（默认全资产）..."
 
     local dev_out=""
     for _ in 1 2 3; do
@@ -208,10 +208,10 @@ test_permission_matrix() {
         sleep 2
     done
     if echo "$dev_out" | grep -q "web-server-01" && echo "$dev_out" | grep -q "api-server-01" &&
-       ! echo "$dev_out" | grep -q "db-server-01" && ! echo "$dev_out" | grep -q "cache-server-01"; then
-        log_pass "developer 资产权限正确"
+       echo "$dev_out" | grep -q "db-server-01" && echo "$dev_out" | grep -q "cache-server-01"; then
+        log_pass "developer 资产可见性正确"
     else
-        log_fail "developer 资产权限不符合预期"
+        log_fail "developer 资产可见性不符合预期"
     fi
 
     local ops_out=""
@@ -223,10 +223,10 @@ test_permission_matrix() {
         sleep 2
     done
     if echo "$ops_out" | grep -q "web-server-01" && echo "$ops_out" | grep -q "api-server-01" &&
-       echo "$ops_out" | grep -q "cache-server-01" && ! echo "$ops_out" | grep -q "db-server-01"; then
-        log_pass "ops 资产权限正确"
+       echo "$ops_out" | grep -q "cache-server-01" && echo "$ops_out" | grep -q "db-server-01"; then
+        log_pass "ops 资产可见性正确"
     else
-        log_fail "ops 资产权限不符合预期"
+        log_fail "ops 资产可见性不符合预期"
     fi
 }
 
@@ -341,7 +341,7 @@ main() {
     test_agent_registration
     wait_for_assets_ready
     test_authentication
-    test_permission_matrix
+    test_user_asset_visibility
     test_nat_reverse_tunnel
     test_session_connectivity
     test_child_node_crud

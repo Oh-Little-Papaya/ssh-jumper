@@ -48,13 +48,7 @@ void printUsage(const char* program) {
               << "      --user <name:password>             Add user from CLI (repeatable)\n"
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
               << "      --token <token>                    Shared cluster token for all agents\n"
-              << "      --agent-token <id:token>           Add agent token from CLI (repeatable)\n"
               << "                                         (if no --user, defaults to admin/admin123)\n"
-              << "      --permission-allow-all <user>      Permission: allow all assets for user (repeatable)\n"
-              << "      --permission-allow-asset <user:asset> Permission: allow specific asset (repeatable)\n"
-              << "      --permission-allow-pattern <user:pattern> Permission: allow hostname pattern (repeatable)\n"
-              << "      --permission-deny-asset <user:asset> Permission: deny specific asset (repeatable)\n"
-              << "      --permission-max-sessions <user:n> Permission: set max sessions (repeatable)\n"
               << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable)\n"
               << "      --default-target-user <user>       Default target SSH user (default: root)\n"
               << "      --default-target-password <pass>   Default target SSH password\n"
@@ -201,15 +195,6 @@ bool parseChildNodeSpec(const std::string& spec, ChildNodeInfo& node) {
     return node.isValid();
 }
 
-UserPermission& getOrCreateCliPermission(std::unordered_map<std::string, UserPermission>& permissions,
-                                         const std::string& username) {
-    auto [it, inserted] = permissions.try_emplace(username);
-    if (inserted) {
-        it->second.username = username;
-    }
-    return it->second;
-}
-
 bool generateAndExportHostKey(enum ssh_keytypes_e keyType, int bits, const std::string& keyPath) {
     ssh_key key = nullptr;
     int rc = ssh_pki_generate(keyType, bits, &key);
@@ -273,8 +258,6 @@ int main(int argc, char* argv[]) {
     std::vector<std::pair<std::string, std::string>> cliUsers;
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
     std::string sharedClusterToken;
-    std::vector<std::pair<std::string, std::string>> cliAgentTokens;
-    std::unordered_map<std::string, UserPermission> cliPermissions;
     std::vector<ChildNodeInfo> cliChildNodes;
     std::string defaultTargetUser = "root";
     std::string defaultTargetPassword;
@@ -294,12 +277,6 @@ int main(int argc, char* argv[]) {
         OPT_USER,
         OPT_USER_HASH,
         OPT_SHARED_TOKEN,
-        OPT_AGENT_TOKEN,
-        OPT_PERMISSION_ALLOW_ALL,
-        OPT_PERMISSION_ALLOW_ASSET,
-        OPT_PERMISSION_ALLOW_PATTERN,
-        OPT_PERMISSION_DENY_ASSET,
-        OPT_PERMISSION_MAX_SESSIONS,
         OPT_CHILD_NODE,
         OPT_DEFAULT_TARGET_USER,
         OPT_DEFAULT_TARGET_PASSWORD,
@@ -321,12 +298,6 @@ int main(int argc, char* argv[]) {
         {"user", required_argument, nullptr, OPT_USER},
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
         {"token", required_argument, nullptr, OPT_SHARED_TOKEN},
-        {"agent-token", required_argument, nullptr, OPT_AGENT_TOKEN},
-        {"permission-allow-all", required_argument, nullptr, OPT_PERMISSION_ALLOW_ALL},
-        {"permission-allow-asset", required_argument, nullptr, OPT_PERMISSION_ALLOW_ASSET},
-        {"permission-allow-pattern", required_argument, nullptr, OPT_PERMISSION_ALLOW_PATTERN},
-        {"permission-deny-asset", required_argument, nullptr, OPT_PERMISSION_DENY_ASSET},
-        {"permission-max-sessions", required_argument, nullptr, OPT_PERMISSION_MAX_SESSIONS},
         {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
         {"default-target-user", required_argument, nullptr, OPT_DEFAULT_TARGET_USER},
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
@@ -390,80 +361,6 @@ int main(int argc, char* argv[]) {
             case OPT_SHARED_TOKEN:
                 sharedClusterToken = trimString(optarg);
                 break;
-            case OPT_AGENT_TOKEN: {
-                std::string agentId;
-                std::string token;
-                if (!splitSpec(optarg, ':', agentId, token)) {
-                    std::cerr << "Invalid --agent-token format, expected id:token, got: " << optarg << std::endl;
-                    return 1;
-                }
-                cliAgentTokens.emplace_back(agentId, token);
-                break;
-            }
-            case OPT_PERMISSION_ALLOW_ALL: {
-                std::string username = trimString(optarg);
-                if (username.empty()) {
-                    std::cerr << "Invalid --permission-allow-all format, expected user, got: "
-                              << optarg << std::endl;
-                    return 1;
-                }
-                auto& permission = getOrCreateCliPermission(cliPermissions, username);
-                permission.allowAll = true;
-                break;
-            }
-            case OPT_PERMISSION_ALLOW_ASSET: {
-                std::string username;
-                std::string assetId;
-                if (!splitSpec(optarg, ':', username, assetId)) {
-                    std::cerr << "Invalid --permission-allow-asset format, expected user:asset, got: "
-                              << optarg << std::endl;
-                    return 1;
-                }
-                auto& permission = getOrCreateCliPermission(cliPermissions, username);
-                permission.allowedAssets.push_back(assetId);
-                break;
-            }
-            case OPT_PERMISSION_ALLOW_PATTERN: {
-                std::string username;
-                std::string pattern;
-                if (!splitSpec(optarg, ':', username, pattern)) {
-                    std::cerr << "Invalid --permission-allow-pattern format, expected user:pattern, got: "
-                              << optarg << std::endl;
-                    return 1;
-                }
-                auto& permission = getOrCreateCliPermission(cliPermissions, username);
-                permission.allowedPatterns.push_back(pattern);
-                break;
-            }
-            case OPT_PERMISSION_DENY_ASSET: {
-                std::string username;
-                std::string assetId;
-                if (!splitSpec(optarg, ':', username, assetId)) {
-                    std::cerr << "Invalid --permission-deny-asset format, expected user:asset, got: "
-                              << optarg << std::endl;
-                    return 1;
-                }
-                auto& permission = getOrCreateCliPermission(cliPermissions, username);
-                permission.deniedAssets.push_back(assetId);
-                break;
-            }
-            case OPT_PERMISSION_MAX_SESSIONS: {
-                std::string username;
-                std::string maxSessionsText;
-                if (!splitSpec(optarg, ':', username, maxSessionsText)) {
-                    std::cerr << "Invalid --permission-max-sessions format, expected user:n, got: "
-                              << optarg << std::endl;
-                    return 1;
-                }
-                int maxSessions = safeStringToInt(maxSessionsText, -1);
-                if (maxSessions <= 0 || maxSessions > 100000) {
-                    std::cerr << "Invalid --permission-max-sessions value: " << maxSessionsText << std::endl;
-                    return 1;
-                }
-                auto& permission = getOrCreateCliPermission(cliPermissions, username);
-                permission.maxSessions = maxSessions;
-                break;
-            }
             case OPT_CHILD_NODE: {
                 ChildNodeInfo node;
                 if (!parseChildNodeSpec(optarg, node)) {
@@ -685,15 +582,8 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Loaded shared cluster token from --token");
     }
     
-    // 加载 Agent token（纯 CLI 注入）
-    bool hasAgentTokens = !sharedClusterToken.empty();
-    for (const auto& tokenSpec : cliAgentTokens) {
-        clusterManager->upsertAgentToken(tokenSpec.first, tokenSpec.second);
-        hasAgentTokens = true;
-        LOG_INFO("Loaded CLI agent-token for id: " + tokenSpec.first);
-    }
-    if (!hasAgentTokens) {
-        LOG_FATAL("No cluster token configured. Provide --token or --agent-token.");
+    if (sharedClusterToken.empty()) {
+        LOG_FATAL("No cluster token configured. Provide --token.");
         removePidFile(pidFile);
         ssh_finalize();
         return 1;
@@ -721,25 +611,18 @@ int main(int argc, char* argv[]) {
     }
     LOG_INFO("Child node registry ready, count=" + std::to_string(nodeRegistry->size()));
     
-    // 加载用户权限（纯 CLI；未显式配置则默认 allow_all）
-    if (cliPermissions.empty()) {
-        const auto& users = configManager.getServerConfig().users;
-        for (const auto& pair : users) {
-            if (!pair.second.enabled) {
-                continue;
-            }
-            UserPermission permission;
-            permission.username = pair.first;
-            permission.allowAll = true;
-            assetManager->upsertUserPermission(permission);
+    // 权限策略简化：所有已配置用户默认允许访问全部资产
+    const auto& users = configManager.getServerConfig().users;
+    for (const auto& pair : users) {
+        if (!pair.second.enabled) {
+            continue;
         }
-        LOG_WARN("No explicit permission arguments provided, defaulting to allow_all for all configured users");
-    } else {
-        for (const auto& pair : cliPermissions) {
-            assetManager->upsertUserPermission(pair.second);
-            LOG_INFO("Loaded CLI permissions for user: " + pair.first);
-        }
+        UserPermission permission;
+        permission.username = pair.first;
+        permission.allowAll = true;
+        assetManager->upsertUserPermission(permission);
     }
+    LOG_INFO("Permissions initialized: allow_all=true for all configured users");
     
     // 创建并启动 SSH 服务器
     auto sshServer = std::make_unique<SSHServer>();
