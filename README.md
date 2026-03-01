@@ -51,12 +51,7 @@ cmake --build build -j"$(nproc)"
 
 ## 2) 启动 jump-server
 
-只准备主机密钥即可（不需要 `users.conf / agent_tokens.conf / user_permissions.conf`）:
-
-```bash
-sudo mkdir -p /etc/ssh_jump /var/log/ssh_jump
-sudo ssh-keygen -t rsa -b 4096 -f /etc/ssh_jump/host_key -N ""
-```
+无需准备任何配置文件；服务启动时会自动生成临时主机密钥。
 
 启动:
 
@@ -66,17 +61,21 @@ sudo ssh-keygen -t rsa -b 4096 -f /etc/ssh_jump/host_key -N ""
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --host-key-path /etc/ssh_jump/host_key \
   --user admin:ChangeMe123! \
+  --user developer:Dev123! \
   --agent-token web-server-01:ws01-secret-token \
+  --permission-allow-all admin \
+  --permission-allow-pattern developer:web-* \
+  --permission-allow-pattern developer:api-* \
+  --permission-max-sessions developer:3 \
   --default-target-user root \
   --default-target-password agent123 \
   --max-connections-per-minute 10
 ```
 
 说明：
-- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`。
-- 未提供 `--permissions-file` 时，默认对已配置用户启用 `allow_all=true`。
+- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`、`--permission-*`。
+- 未提供任何 `--permission-*` 时，默认对已配置用户启用 `allow_all=true`。
 - 旧命令 `./ssh_jump_server -c /etc/ssh_jump/config.conf` 已废弃。
 
 ## 3) 启动 jump-agent
@@ -108,14 +107,14 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 - `-a, --agent-port` Agent 注册端口，默认 `8888`
 - `--listen-address` SSH 监听地址，默认 `0.0.0.0`
 - `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
-- `--host-key-path` SSH 主机私钥路径
-- `--users-file` 用户认证文件路径（可选）
 - `--user` 直接注入用户，格式 `name:password`，可重复
 - `--user-hash` 直接注入用户哈希，格式 `name:hash`，可重复
-- `--agent-token-file` Agent token 文件路径（可选）
 - `--agent-token` 直接注入 Agent token，格式 `id:token`，可重复
-- `--permissions-file` 用户权限文件路径（可选）
-- `--child-nodes-file` 子节点注册文件路径（可选）
+- `--permission-allow-all` 权限：给用户开启全资产访问，格式 `user`，可重复
+- `--permission-allow-asset` 权限：允许指定资产，格式 `user:asset`，可重复
+- `--permission-allow-pattern` 权限：允许主机名通配，格式 `user:pattern`，可重复
+- `--permission-deny-asset` 权限：拒绝指定资产，格式 `user:asset`，可重复
+- `--permission-max-sessions` 权限：设置并发会话上限，格式 `user:n`，可重复
 - `--child-node` 直接注入子节点，格式 `id:addr[:ssh[:cluster[:name]]]`，可重复
 - `--default-target-user` 默认目标主机登录用户名，默认 `root`
 - `--default-target-password` 默认目标主机登录密码

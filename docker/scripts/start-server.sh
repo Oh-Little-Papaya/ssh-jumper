@@ -1,7 +1,6 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-CONFIG_DIR="/etc/ssh_jump"
 LOG_DIR="/var/log/ssh_jump"
 SSH_PORT="${SSH_PORT:-2222}"
 AGENT_PORT="${AGENT_PORT:-8888}"
@@ -13,6 +12,14 @@ DEFAULT_TARGET_PRIVATE_KEY="${DEFAULT_TARGET_PRIVATE_KEY:-}"
 DEFAULT_TARGET_KEY_PASSWORD="${DEFAULT_TARGET_KEY_PASSWORD:-}"
 MAX_CONNECTIONS_PER_MINUTE="${MAX_CONNECTIONS_PER_MINUTE:-120}"
 
+SERVER_USERS="${SERVER_USERS:-admin:admin123,developer:dev123,ops:ops123}"
+SERVER_AGENT_TOKENS="${SERVER_AGENT_TOKENS:-web-server-01:ws01-secret-token-2024,api-server-01:api01-secret-token-2024,db-server-01:db01-secret-token-2024,cache-server-01:cs01-secret-token-2024}"
+SERVER_PERMISSION_ALLOW_ALL="${SERVER_PERMISSION_ALLOW_ALL:-admin}"
+SERVER_PERMISSION_ALLOW_PATTERN="${SERVER_PERMISSION_ALLOW_PATTERN:-developer:web-*,developer:api-*,ops:web-*,ops:db-*,ops:cache-*,ops:api-*}"
+SERVER_PERMISSION_DENY_ASSET="${SERVER_PERMISSION_DENY_ASSET:-ops:db-server-01}"
+SERVER_PERMISSION_MAX_SESSIONS="${SERVER_PERMISSION_MAX_SESSIONS:-admin:10,developer:3,ops:5}"
+SERVER_CHILD_NODES="${SERVER_CHILD_NODES:-public-mgr-01:jump-server:2222:8888:public-mgr-01}"
+
 echo "========================================"
 echo "  SSH Jump Server - Docker"
 echo "========================================"
@@ -20,20 +27,7 @@ echo "========================================"
 # 确保日志目录存在
 mkdir -p "$LOG_DIR"
 
-# 生成主机密钥（如果不存在）
-if [ ! -f "$CONFIG_DIR/host_key" ]; then
-    echo "[INFO] 生成 RSA 主机密钥..."
-    ssh-keygen -t rsa -b 4096 -f "$CONFIG_DIR/host_key" -N "" -C "ssh_jump_server"
-fi
-
-if [ ! -f "$CONFIG_DIR/host_key_ecdsa" ]; then
-    echo "[INFO] 生成 ECDSA 主机密钥..."
-    ssh-keygen -t ecdsa -b 521 -f "$CONFIG_DIR/host_key_ecdsa" -N "" -C "ssh_jump_server"
-fi
-
 # 设置权限（忽略错误，因为卷挂载可能不允许）
-chmod 600 "$CONFIG_DIR/host_key" 2>/dev/null || true
-chmod 644 "$CONFIG_DIR/host_key.pub" 2>/dev/null || true
 chown -R $(id -u):$(id -g) "$LOG_DIR" 2>/dev/null || true
 
 # 显示配置信息
@@ -42,18 +36,11 @@ echo "[INFO] 日志目录: $LOG_DIR"
 echo "[INFO] SSH 端口: $SSH_PORT"
 echo "[INFO] Agent 端口: $AGENT_PORT"
 echo ""
-echo "[INFO] 用户列表:"
-grep -v "^#" "$CONFIG_DIR/users.conf" | grep "=" | cut -d'=' -f1 | sed 's/^/  - /'
+echo "[INFO] 用户参数: $SERVER_USERS"
+echo "[INFO] Token 参数: $SERVER_AGENT_TOKENS"
+echo "[INFO] 权限参数: allow_all=$SERVER_PERMISSION_ALLOW_ALL allow_pattern=$SERVER_PERMISSION_ALLOW_PATTERN deny_asset=$SERVER_PERMISSION_DENY_ASSET max_sessions=$SERVER_PERMISSION_MAX_SESSIONS"
+echo "[INFO] 子节点参数: $SERVER_CHILD_NODES"
 echo ""
-echo "[INFO] Agent Token 列表:"
-grep -v "^#" "$CONFIG_DIR/agent_tokens.conf" | grep "=" | cut -d'=' -f1 | sed 's/^/  - /'
-echo ""
-
-if [ -f "$CONFIG_DIR/child_nodes.conf" ]; then
-    echo "[INFO] 子节点列表:"
-    grep -v "^#" "$CONFIG_DIR/child_nodes.conf" | grep "^\[node:" | sed 's/^\[node:/  - /' | sed 's/\]$//'
-    echo ""
-fi
 
 # 启动服务器
 echo "[INFO] 启动 SSH Jump Server..."
@@ -64,15 +51,32 @@ SERVER_CMD=(
     -a "$AGENT_PORT"
     --listen-address "$SSH_LISTEN_ADDRESS"
     --cluster-listen-address "$CLUSTER_LISTEN_ADDRESS"
-    --host-key-path "$CONFIG_DIR/host_key"
-    --users-file "$CONFIG_DIR/users.conf"
-    --agent-token-file "$CONFIG_DIR/agent_tokens.conf"
-    --permissions-file "$CONFIG_DIR/user_permissions.conf"
-    --child-nodes-file "$CONFIG_DIR/child_nodes.conf"
     --default-target-user "$DEFAULT_TARGET_USER"
     --max-connections-per-minute "$MAX_CONNECTIONS_PER_MINUTE"
     -v
 )
+
+append_csv_option() {
+    local option="$1"
+    local csv="$2"
+    [ -z "$csv" ] && return
+
+    local IFS=','
+    read -ra entries <<< "$csv"
+    for entry in "${entries[@]}"; do
+        entry="$(echo "$entry" | xargs)"
+        [ -z "$entry" ] && continue
+        SERVER_CMD+=("$option" "$entry")
+    done
+}
+
+append_csv_option "--user" "$SERVER_USERS"
+append_csv_option "--agent-token" "$SERVER_AGENT_TOKENS"
+append_csv_option "--permission-allow-all" "$SERVER_PERMISSION_ALLOW_ALL"
+append_csv_option "--permission-allow-pattern" "$SERVER_PERMISSION_ALLOW_PATTERN"
+append_csv_option "--permission-deny-asset" "$SERVER_PERMISSION_DENY_ASSET"
+append_csv_option "--permission-max-sessions" "$SERVER_PERMISSION_MAX_SESSIONS"
+append_csv_option "--child-node" "$SERVER_CHILD_NODES"
 
 if [ -n "$DEFAULT_TARGET_PASSWORD" ]; then
     SERVER_CMD+=(--default-target-password "$DEFAULT_TARGET_PASSWORD")

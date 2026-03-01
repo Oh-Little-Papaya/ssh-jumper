@@ -19,9 +19,12 @@
 #include "config_manager.h"
 
 #include <getopt.h>
+#include <filesystem>
 #include <iomanip>
 #include <openssl/sha.h>
 #include <sstream>
+#include <system_error>
+#include <sys/stat.h>
 
 using namespace sshjump;
 
@@ -42,14 +45,14 @@ void printUsage(const char* program) {
               << "  -a, --agent-port <port> Agent cluster port (default: 8888)\n"
               << "      --listen-address <addr>            SSH listen address (default: 0.0.0.0)\n"
               << "      --cluster-listen-address <addr>    Cluster listen address (default: 0.0.0.0)\n"
-              << "      --host-key-path <path>             Host key path (default: /etc/ssh_jump/host_key)\n"
-              << "      --users-file <path>                Users file (optional)\n"
               << "      --user <name:password>             Add user from CLI (repeatable)\n"
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
-              << "      --agent-token-file <path>          Agent token file (optional)\n"
               << "      --agent-token <id:token>           Add agent token from CLI (repeatable)\n"
-              << "      --permissions-file <path>          Permissions file (optional)\n"
-              << "      --child-nodes-file <path>          Child nodes file (optional)\n"
+              << "      --permission-allow-all <user>      Permission: allow all assets for user (repeatable)\n"
+              << "      --permission-allow-asset <user:asset> Permission: allow specific asset (repeatable)\n"
+              << "      --permission-allow-pattern <user:pattern> Permission: allow hostname pattern (repeatable)\n"
+              << "      --permission-deny-asset <user:asset> Permission: deny specific asset (repeatable)\n"
+              << "      --permission-max-sessions <user:n> Permission: set max sessions (repeatable)\n"
               << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable)\n"
               << "      --default-target-user <user>       Default target SSH user (default: root)\n"
               << "      --default-target-password <pass>   Default target SSH password\n"
@@ -71,7 +74,7 @@ void printUsage(const char* program) {
               << "  4. Quick:     ssh -p 2222 admin@jump.example.com @1\n"
               << "\nExamples:\n"
               << "  " << program << " -p 2222 -a 8888 --user admin:admin123 --agent-token web-01:token\n"
-              << "  " << program << " -d --host-key-path /etc/ssh_jump/host_key\n";
+              << "  " << program << " -d --user admin:admin123 --agent-token web-01:token\n";
 }
 
 // 打印版本信息
@@ -196,20 +199,79 @@ bool parseChildNodeSpec(const std::string& spec, ChildNodeInfo& node) {
     return node.isValid();
 }
 
+UserPermission& getOrCreateCliPermission(std::unordered_map<std::string, UserPermission>& permissions,
+                                         const std::string& username) {
+    auto [it, inserted] = permissions.try_emplace(username);
+    if (inserted) {
+        it->second.username = username;
+    }
+    return it->second;
+}
+
+bool generateAndExportHostKey(enum ssh_keytypes_e keyType, int bits, const std::string& keyPath) {
+    ssh_key key = nullptr;
+    int rc = ssh_pki_generate(keyType, bits, &key);
+    if (rc != SSH_OK || !key) {
+        return false;
+    }
+
+    rc = ssh_pki_export_privkey_file(key, nullptr, nullptr, nullptr, keyPath.c_str());
+    ssh_key_free(key);
+
+    if (rc != SSH_OK) {
+        return false;
+    }
+
+    chmod(keyPath.c_str(), 0600);
+    return true;
+}
+
+bool generateEphemeralHostKeys(std::string& hostKeyPath, std::string& hostKeyDir) {
+    char dirTemplate[] = "/tmp/ssh_jump_hostkey_XXXXXX";
+    char* dir = mkdtemp(dirTemplate);
+    if (!dir) {
+        return false;
+    }
+
+    hostKeyDir = dir;
+    hostKeyPath = hostKeyDir + "/host_key";
+
+    if (!generateAndExportHostKey(SSH_KEYTYPE_RSA, 3072, hostKeyPath)) {
+        return false;
+    }
+
+    // ECDSA 可选，失败仅降级，不影响启动
+    const std::string ecdsaKeyPath = hostKeyPath + "_ecdsa";
+    if (!generateAndExportHostKey(SSH_KEYTYPE_ECDSA, 521, ecdsaKeyPath)) {
+        LOG_WARN("Failed to generate optional ECDSA host key, fallback to RSA only");
+    }
+
+    return true;
+}
+
+struct TempPathGuard {
+    std::string path;
+    ~TempPathGuard() {
+        if (path.empty()) {
+            return;
+        }
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+};
+
 int main(int argc, char* argv[]) {
     // 默认配置（纯命令行参数驱动）
     int sshPort = DEFAULT_SSH_PORT;
     int agentPort = DEFAULT_CLUSTER_PORT;
     std::string sshListenAddr = "0.0.0.0";
     std::string clusterListenAddr = "0.0.0.0";
-    std::string hostKeyPath = "/etc/ssh_jump/host_key";
-    std::string usersFile;
-    std::string agentTokenFile;
-    std::string permissionsFile;
-    std::string childNodesFile;
+    std::string hostKeyPath;
+    TempPathGuard generatedHostKeyGuard;
     std::vector<std::pair<std::string, std::string>> cliUsers;
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
     std::vector<std::pair<std::string, std::string>> cliAgentTokens;
+    std::unordered_map<std::string, UserPermission> cliPermissions;
     std::vector<ChildNodeInfo> cliChildNodes;
     std::string defaultTargetUser = "root";
     std::string defaultTargetPassword;
@@ -226,14 +288,14 @@ int main(int argc, char* argv[]) {
     enum LongOptionValue {
         OPT_LISTEN_ADDRESS = 1000,
         OPT_CLUSTER_LISTEN_ADDRESS,
-        OPT_HOST_KEY_PATH,
-        OPT_USERS_FILE,
         OPT_USER,
         OPT_USER_HASH,
-        OPT_AGENT_TOKEN_FILE,
         OPT_AGENT_TOKEN,
-        OPT_PERMISSIONS_FILE,
-        OPT_CHILD_NODES_FILE,
+        OPT_PERMISSION_ALLOW_ALL,
+        OPT_PERMISSION_ALLOW_ASSET,
+        OPT_PERMISSION_ALLOW_PATTERN,
+        OPT_PERMISSION_DENY_ASSET,
+        OPT_PERMISSION_MAX_SESSIONS,
         OPT_CHILD_NODE,
         OPT_DEFAULT_TARGET_USER,
         OPT_DEFAULT_TARGET_PASSWORD,
@@ -252,14 +314,14 @@ int main(int argc, char* argv[]) {
         {"agent-port", required_argument, nullptr, 'a'},
         {"listen-address", required_argument, nullptr, OPT_LISTEN_ADDRESS},
         {"cluster-listen-address", required_argument, nullptr, OPT_CLUSTER_LISTEN_ADDRESS},
-        {"host-key-path", required_argument, nullptr, OPT_HOST_KEY_PATH},
-        {"users-file", required_argument, nullptr, OPT_USERS_FILE},
         {"user", required_argument, nullptr, OPT_USER},
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
-        {"agent-token-file", required_argument, nullptr, OPT_AGENT_TOKEN_FILE},
         {"agent-token", required_argument, nullptr, OPT_AGENT_TOKEN},
-        {"permissions-file", required_argument, nullptr, OPT_PERMISSIONS_FILE},
-        {"child-nodes-file", required_argument, nullptr, OPT_CHILD_NODES_FILE},
+        {"permission-allow-all", required_argument, nullptr, OPT_PERMISSION_ALLOW_ALL},
+        {"permission-allow-asset", required_argument, nullptr, OPT_PERMISSION_ALLOW_ASSET},
+        {"permission-allow-pattern", required_argument, nullptr, OPT_PERMISSION_ALLOW_PATTERN},
+        {"permission-deny-asset", required_argument, nullptr, OPT_PERMISSION_DENY_ASSET},
+        {"permission-max-sessions", required_argument, nullptr, OPT_PERMISSION_MAX_SESSIONS},
         {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
         {"default-target-user", required_argument, nullptr, OPT_DEFAULT_TARGET_USER},
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
@@ -300,12 +362,6 @@ int main(int argc, char* argv[]) {
             case OPT_CLUSTER_LISTEN_ADDRESS:
                 clusterListenAddr = optarg;
                 break;
-            case OPT_HOST_KEY_PATH:
-                hostKeyPath = optarg;
-                break;
-            case OPT_USERS_FILE:
-                usersFile = optarg;
-                break;
             case OPT_USER: {
                 std::string username;
                 std::string password;
@@ -326,9 +382,6 @@ int main(int argc, char* argv[]) {
                 cliUsersHash.emplace_back(username, hashValue);
                 break;
             }
-            case OPT_AGENT_TOKEN_FILE:
-                agentTokenFile = optarg;
-                break;
             case OPT_AGENT_TOKEN: {
                 std::string agentId;
                 std::string token;
@@ -339,12 +392,70 @@ int main(int argc, char* argv[]) {
                 cliAgentTokens.emplace_back(agentId, token);
                 break;
             }
-            case OPT_PERMISSIONS_FILE:
-                permissionsFile = optarg;
+            case OPT_PERMISSION_ALLOW_ALL: {
+                std::string username = trimString(optarg);
+                if (username.empty()) {
+                    std::cerr << "Invalid --permission-allow-all format, expected user, got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                auto& permission = getOrCreateCliPermission(cliPermissions, username);
+                permission.allowAll = true;
                 break;
-            case OPT_CHILD_NODES_FILE:
-                childNodesFile = optarg;
+            }
+            case OPT_PERMISSION_ALLOW_ASSET: {
+                std::string username;
+                std::string assetId;
+                if (!splitSpec(optarg, ':', username, assetId)) {
+                    std::cerr << "Invalid --permission-allow-asset format, expected user:asset, got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                auto& permission = getOrCreateCliPermission(cliPermissions, username);
+                permission.allowedAssets.push_back(assetId);
                 break;
+            }
+            case OPT_PERMISSION_ALLOW_PATTERN: {
+                std::string username;
+                std::string pattern;
+                if (!splitSpec(optarg, ':', username, pattern)) {
+                    std::cerr << "Invalid --permission-allow-pattern format, expected user:pattern, got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                auto& permission = getOrCreateCliPermission(cliPermissions, username);
+                permission.allowedPatterns.push_back(pattern);
+                break;
+            }
+            case OPT_PERMISSION_DENY_ASSET: {
+                std::string username;
+                std::string assetId;
+                if (!splitSpec(optarg, ':', username, assetId)) {
+                    std::cerr << "Invalid --permission-deny-asset format, expected user:asset, got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                auto& permission = getOrCreateCliPermission(cliPermissions, username);
+                permission.deniedAssets.push_back(assetId);
+                break;
+            }
+            case OPT_PERMISSION_MAX_SESSIONS: {
+                std::string username;
+                std::string maxSessionsText;
+                if (!splitSpec(optarg, ':', username, maxSessionsText)) {
+                    std::cerr << "Invalid --permission-max-sessions format, expected user:n, got: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                int maxSessions = safeStringToInt(maxSessionsText, -1);
+                if (maxSessions <= 0 || maxSessions > 100000) {
+                    std::cerr << "Invalid --permission-max-sessions value: " << maxSessionsText << std::endl;
+                    return 1;
+                }
+                auto& permission = getOrCreateCliPermission(cliPermissions, username);
+                permission.maxSessions = maxSessions;
+                break;
+            }
             case OPT_CHILD_NODE: {
                 ChildNodeInfo node;
                 if (!parseChildNodeSpec(optarg, node)) {
@@ -419,6 +530,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "Invalid max connections per minute: " << maxConnectionsPerMinute << std::endl;
         return 1;
     }
+
+    std::string generatedHostKeyDir;
+    if (!generateEphemeralHostKeys(hostKeyPath, generatedHostKeyDir)) {
+        std::cerr << "Failed to auto-generate host key" << std::endl;
+        return 1;
+    }
+    generatedHostKeyGuard.path = generatedHostKeyDir;
     
     // 设置日志级别
     if (verbose) {
@@ -452,30 +570,22 @@ int main(int argc, char* argv[]) {
 
         config.cluster.listenAddress = clusterListenAddr;
         config.cluster.port = agentPort;
-        config.cluster.agentTokenFile = agentTokenFile;
+        config.cluster.agentTokenFile.clear();
         config.cluster.reverseTunnelPortStart = reverseTunnelPortStart;
         config.cluster.reverseTunnelPortEnd = reverseTunnelPortEnd;
         config.cluster.reverseTunnelRetries = reverseTunnelRetries;
         config.cluster.reverseTunnelAcceptTimeoutMs = reverseTunnelAcceptTimeoutMs;
 
-        config.assets.permissionsFile = permissionsFile;
+        config.assets.permissionsFile.clear();
 
-        config.security.usersFile = usersFile;
+        config.security.usersFile.clear();
         config.security.defaultTargetUser = defaultTargetUser;
         config.security.defaultTargetPassword = defaultTargetPassword;
         config.security.defaultTargetPrivateKey = defaultTargetPrivateKey;
         config.security.defaultTargetPrivateKeyPassword = defaultTargetKeyPassword;
         config.security.maxConnectionsPerMinute = maxConnectionsPerMinute;
 
-        config.management.childNodesFile = childNodesFile;
-    }
-
-    if (!usersFile.empty()) {
-        if (!configManager.loadUsers(usersFile)) {
-            LOG_WARN("Failed to load users file from --users-file: " + usersFile);
-        } else {
-            LOG_INFO("Users loaded from --users-file: " + usersFile);
-        }
+        config.management.childNodesFile.clear();
     }
 
     {
@@ -500,7 +610,7 @@ int main(int argc, char* argv[]) {
         }
 
         if (config.users.empty()) {
-            LOG_FATAL("No users configured. Provide --user / --user-hash or --users-file.");
+            LOG_FATAL("No users configured. Provide --user or --user-hash.");
             ssh_finalize();
             return 1;
         }
@@ -559,23 +669,15 @@ int main(int argc, char* argv[]) {
         clusterConfig.reverseTunnelRetries,
         clusterConfig.reverseTunnelAcceptTimeoutMs);
     
-    // 加载 Agent token（文件可选，支持纯 CLI 注入）
+    // 加载 Agent token（纯 CLI 注入）
     bool hasAgentTokens = false;
-    if (!clusterConfig.agentTokenFile.empty()) {
-        if (clusterManager->loadAgentTokens(clusterConfig.agentTokenFile)) {
-            hasAgentTokens = true;
-            LOG_INFO("Agent tokens loaded from file: " + clusterConfig.agentTokenFile);
-        } else {
-            LOG_WARN("Failed to load --agent-token-file: " + clusterConfig.agentTokenFile);
-        }
-    }
     for (const auto& tokenSpec : cliAgentTokens) {
         clusterManager->upsertAgentToken(tokenSpec.first, tokenSpec.second);
         hasAgentTokens = true;
         LOG_INFO("Loaded CLI agent-token for id: " + tokenSpec.first);
     }
     if (!hasAgentTokens) {
-        LOG_FATAL("No agent tokens configured. Provide --agent-token or --agent-token-file.");
+        LOG_FATAL("No agent tokens configured. Provide --agent-token.");
         removePidFile(pidFile);
         ssh_finalize();
         return 1;
@@ -594,16 +696,8 @@ int main(int argc, char* argv[]) {
     auto assetManager = std::make_shared<AssetManager>();
     assetManager->initialize(clusterManager);
 
-    // 创建并加载子节点注册表（公网管理节点配置）
+    // 创建并加载子节点注册表（公网管理节点配置，纯 CLI）
     auto nodeRegistry = std::make_shared<ChildNodeRegistry>();
-    const std::string nodeFilePath = configManager.getServerConfig().management.childNodesFile;
-    if (!nodeFilePath.empty()) {
-        if (nodeRegistry->loadFromFile(nodeFilePath)) {
-            LOG_INFO("Child node registry loaded from file: " + nodeFilePath);
-        } else {
-            LOG_WARN("Failed to load --child-nodes-file: " + nodeFilePath);
-        }
-    }
     for (const auto& node : cliChildNodes) {
         if (!nodeRegistry->createNode(node, true)) {
             LOG_WARN("Failed to create CLI child node: " + node.nodeId);
@@ -611,16 +705,8 @@ int main(int argc, char* argv[]) {
     }
     LOG_INFO("Child node registry ready, count=" + std::to_string(nodeRegistry->size()));
     
-    // 加载用户权限配置（文件可选；无文件时默认 allow_all）
-    bool permissionsLoaded = false;
-    const std::string permissionPath = configManager.getServerConfig().assets.permissionsFile;
-    if (!permissionPath.empty()) {
-        permissionsLoaded = assetManager->loadUserPermissions(permissionPath);
-        if (!permissionsLoaded) {
-            LOG_WARN("Failed to load --permissions-file: " + permissionPath);
-        }
-    }
-    if (!permissionsLoaded) {
+    // 加载用户权限（纯 CLI；未显式配置则默认 allow_all）
+    if (cliPermissions.empty()) {
         const auto& users = configManager.getServerConfig().users;
         for (const auto& pair : users) {
             if (!pair.second.enabled) {
@@ -631,7 +717,12 @@ int main(int argc, char* argv[]) {
             permission.allowAll = true;
             assetManager->upsertUserPermission(permission);
         }
-        LOG_WARN("No permission file configured, defaulting to allow_all for all configured users");
+        LOG_WARN("No explicit permission arguments provided, defaulting to allow_all for all configured users");
+    } else {
+        for (const auto& pair : cliPermissions) {
+            assetManager->upsertUserPermission(pair.second);
+            LOG_INFO("Loaded CLI permissions for user: " + pair.first);
+        }
     }
     
     // 创建并启动 SSH 服务器

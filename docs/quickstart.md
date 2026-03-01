@@ -27,31 +27,12 @@ make -j$(nproc)
 sudo make install
 ```
 
-## 2. 初始化运行文件（1 分钟）
+## 2. 准备启动参数（1 分钟）
 
-```bash
-# 创建目录
-sudo mkdir -p /etc/ssh_jump /var/log/ssh_jump
-
-# 生成主机密钥
-sudo ssh-keygen -t rsa -b 2048 -f /etc/ssh_jump/host_key -N ""
-
-# 创建用户认证文件（默认 admin/admin123，生产环境请修改）
-sudo tee /etc/ssh_jump/users.conf << 'EOF'
-admin = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9
-EOF
-
-# 创建 token 文件
-sudo tee /etc/ssh_jump/agent_tokens.conf << 'EOF'
-my-server = my-secret-token
-EOF
-
-# 创建权限文件
-sudo tee /etc/ssh_jump/user_permissions.conf << 'EOF'
-[user:admin]
-allow_all = true
-EOF
-```
+无需任何配置文件。你只需要准备：
+- 登录用户（`--user`）
+- Agent token（`--agent-token`）
+- 用户权限（`--permission-*`，可选；不传默认 `allow_all=true`）
 
 ## 3. 启动服务器（1 分钟）
 
@@ -62,11 +43,9 @@ sudo ./ssh_jump_server \
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --host-key-path /etc/ssh_jump/host_key \
-  --users-file /etc/ssh_jump/users.conf \
-  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
-  --permissions-file /etc/ssh_jump/user_permissions.conf \
-  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --user admin:admin123 \
+  --agent-token my-server:my-secret-token \
+  --permission-allow-all admin \
   --default-target-user root
 
 # 或使用守护进程模式
@@ -75,11 +54,9 @@ sudo ./ssh_jump_server \
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --host-key-path /etc/ssh_jump/host_key \
-  --users-file /etc/ssh_jump/users.conf \
-  --agent-token-file /etc/ssh_jump/agent_tokens.conf \
-  --permissions-file /etc/ssh_jump/user_permissions.conf \
-  --child-nodes-file /etc/ssh_jump/child_nodes.conf \
+  --user admin:admin123 \
+  --agent-token my-server:my-secret-token \
+  --permission-allow-all admin \
   --default-target-user root \
   -d
 ```
@@ -151,7 +128,7 @@ sudo ufw allow 8888/tcp
 **Q: Agent 无法注册？**
 A: 检查 token 是否正确：
 ```bash
-sudo cat /etc/ssh_jump/agent_tokens.conf
+ps -ef | grep ssh_jump_server
 ```
 
 **Q: 如何停止服务？**
