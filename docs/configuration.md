@@ -12,11 +12,11 @@
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --user admin:admin123 \
-  --agent-token web-server-01:ws01-secret-token
+  --token cluster-secret-token
 ```
 
 说明：
+- 不传 `--user/--user-hash` 时会自动创建默认用户 `admin/admin123`。
 - 不传 `--permission-*` 时，默认对已配置用户启用 `allow_all=true`。
 - 主机密钥自动生成，无需提供文件路径。
 
@@ -26,9 +26,10 @@
 - `-a, --agent-port` Agent 注册端口，默认 `8888`
 - `--listen-address` SSH 监听地址，默认 `0.0.0.0`
 - `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
+- `--token` 集群共享 token（推荐）
 - `--user` 用户明文密码，格式 `name:password`，可重复
 - `--user-hash` 用户哈希密码，格式 `name:hash`，可重复
-- `--agent-token` Agent token，格式 `id:token`，可重复
+- `--agent-token` 按节点 token（高级模式），格式 `id:token`，可重复
 - `--child-node` 子节点，格式 `id:addr[:ssh[:cluster[:name]]]`，可重复
 - `--default-target-user` 默认目标机登录用户名
 - `--default-target-password` 默认目标机登录密码
@@ -58,6 +59,7 @@
 ./ssh_jump_server \
   -p 2222 \
   -a 8888 \
+  --token cluster-secret-token \
   --user admin:admin123 \
   --user developer:dev123 \
   --user ops:ops123 \
@@ -84,7 +86,7 @@
   -s <jump-server-ip> \
   -p 8888 \
   -i web-server-01 \
-  -t ws01-secret-token \
+  -t cluster-secret-token \
   -n web-server-01 \
   -S ssh:ssh:22
 ```

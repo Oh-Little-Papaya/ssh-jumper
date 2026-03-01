@@ -61,20 +61,16 @@ cmake --build build -j"$(nproc)"
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --user admin:ChangeMe123! \
-  --user developer:Dev123! \
-  --agent-token web-server-01:ws01-secret-token \
-  --permission-allow-all admin \
-  --permission-allow-pattern developer:web-* \
-  --permission-allow-pattern developer:api-* \
-  --permission-max-sessions developer:3 \
+  --token cluster-secret-token \
   --default-target-user root \
   --default-target-password agent123 \
   --max-connections-per-minute 10
 ```
 
 说明：
-- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`、`--permission-*`。
+- 只传 `--token` 即可完成集群认证配置，所有 agent 使用同一个 token 注册。
+- 未提供用户时，会自动创建默认登录用户 `admin/admin123`。
+- 可重复传 `--user`、`--user-hash`、`--agent-token`、`--child-node`、`--permission-*`（高级用法）。
 - 未提供任何 `--permission-*` 时，默认对已配置用户启用 `allow_all=true`。
 - 旧命令 `./ssh_jump_server -c /etc/ssh_jump/config.conf` 已废弃。
 
@@ -85,7 +81,7 @@ cmake --build build -j"$(nproc)"
   -s <jump-server-ip> \
   -p 8888 \
   -i web-server-01 \
-  -t ws01-secret-token \
+  -t cluster-secret-token \
   -n web-server-01 \
   -S ssh:ssh:22
 ```
@@ -107,9 +103,10 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 - `-a, --agent-port` Agent 注册端口，默认 `8888`
 - `--listen-address` SSH 监听地址，默认 `0.0.0.0`
 - `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
+- `--token` 集群共享 token（推荐），所有 agent 复用同一 token
 - `--user` 直接注入用户，格式 `name:password`，可重复
 - `--user-hash` 直接注入用户哈希，格式 `name:hash`，可重复
-- `--agent-token` 直接注入 Agent token，格式 `id:token`，可重复
+- `--agent-token` 按节点 token（高级模式），格式 `id:token`，可重复
 - `--permission-allow-all` 权限：给用户开启全资产访问，格式 `user`，可重复
 - `--permission-allow-asset` 权限：允许指定资产，格式 `user:asset`，可重复
 - `--permission-allow-pattern` 权限：允许主机名通配，格式 `user:pattern`，可重复

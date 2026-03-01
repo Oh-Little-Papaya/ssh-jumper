@@ -25,6 +25,7 @@ constexpr int kDefaultReverseTunnelPortStart = 38000;
 constexpr int kDefaultReverseTunnelPortEnd = 38199;
 constexpr int kDefaultReverseTunnelRetries = 3;
 constexpr int kSendTimeoutMs = 5000;
+constexpr uint32_t kMaxAgentMessageSize = 10 * 1024 * 1024;
 
 std::string extractJsonStringValue(const std::string& payload, const std::string& key) {
     const std::string searchKey = "\"" + key + "\":\"";
@@ -452,55 +453,98 @@ bool AgentConnection::initialize() {
 
 int AgentConnection::onRead() {
     char buffer[DEFAULT_BUFFER_SIZE];
-    ssize_t n = recv(fd_, buffer, sizeof(buffer), 0);
-    
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
+    while (true) {
+        ssize_t n = recv(fd_, buffer, sizeof(buffer), 0);
+        if (n > 0) {
+            readBuffer_.append(buffer, static_cast<size_t>(n));
+            continue;
         }
-        return -1;
-    }
-    
-    if (n == 0) {
-        return -1;  // 连接关闭
-    }
-    
-    readBuffer_.append(buffer, n);
-    
-    // 尝试解析消息
-    while (readBuffer_.readableBytes() >= 9) {
-        AgentMessage msg;
-        if (AgentMessage::deserialize(
-                reinterpret_cast<const uint8_t*>(readBuffer_.readableData()),
-                readBuffer_.readableBytes(), msg)) {
-            
-            handleMessage(msg);
-            readBuffer_.retrieve(9 + msg.length);
-        } else {
+
+        if (n == 0) {
+            return -1;
+        }
+
+        if (errno == EINTR) {
+            continue;
+        }
+
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
             break;
         }
+
+        return -1;
     }
-    
+
+    // 尝试解析消息（ET 模式下必须持续解析直到数据不足）
+    while (readBuffer_.readableBytes() >= 9) {
+        const auto* data = reinterpret_cast<const uint8_t*>(readBuffer_.readableData());
+        const uint32_t magic = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+        if (magic != MAGIC_NUMBER) {
+            LOG_WARN("Invalid agent message magic on fd " + std::to_string(fd_));
+            return -1;
+        }
+
+        const uint32_t payloadLen = (data[5] << 24) | (data[6] << 16) | (data[7] << 8) | data[8];
+        if (payloadLen > kMaxAgentMessageSize) {
+            LOG_WARN("Agent message too large on fd " + std::to_string(fd_) +
+                     ", len=" + std::to_string(payloadLen));
+            return -1;
+        }
+
+        const size_t frameSize = 9u + static_cast<size_t>(payloadLen);
+        if (readBuffer_.readableBytes() < frameSize) {
+            break;
+        }
+
+        AgentMessage msg;
+        if (!AgentMessage::deserialize(data, frameSize, msg)) {
+            LOG_WARN("Failed to deserialize agent message on fd " + std::to_string(fd_));
+            return -1;
+        }
+
+        handleMessage(msg);
+        readBuffer_.retrieve(frameSize);
+    }
+
     return 0;
 }
 
 int AgentConnection::onWrite() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    bool needEnableWrite = false;
+    bool needModifyEvents = false;
 
-    if (writeBuffer_.readableBytes() == 0) {
-        return 0;
-    }
-    
-    ssize_t n = send(fd_, writeBuffer_.readableData(), writeBuffer_.readableBytes(), MSG_NOSIGNAL);
-    
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        while (writeBuffer_.readableBytes() > 0) {
+            ssize_t n = send(fd_, writeBuffer_.readableData(), writeBuffer_.readableBytes(), MSG_NOSIGNAL);
+            if (n > 0) {
+                writeBuffer_.retrieve(static_cast<size_t>(n));
+                continue;
+            }
+
+            if (n < 0 && errno == EINTR) {
+                continue;
+            }
+
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                needEnableWrite = true;
+                break;
+            }
+
+            return -1;
         }
-        return -1;
+
+        if (writeEventEnabled_ != needEnableWrite) {
+            writeEventEnabled_ = needEnableWrite;
+            needModifyEvents = true;
+        }
     }
-    
-    writeBuffer_.retrieve(n);
+
+    if (needModifyEvents && manager_) {
+        manager_->setConnectionWriteInterest(fd_, needEnableWrite);
+    }
+
     return 0;
 }
 
@@ -646,29 +690,50 @@ void AgentConnection::sendResponse(bool success, const std::string& message) {
     AgentMessage msg = AgentMessage::create(AgentMessageType::RESPONSE, payload);
     
     auto data = msg.serialize();
+    bool needEnableWrite = false;
+    bool needModifyEvents = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         writeBuffer_.append(reinterpret_cast<const char*>(data.data()), data.size());
+        needEnableWrite = writeBuffer_.readableBytes() > 0;
+        if (writeEventEnabled_ != needEnableWrite) {
+            writeEventEnabled_ = needEnableWrite;
+            needModifyEvents = true;
+        }
+    }
+
+    if (needModifyEvents && manager_) {
+        manager_->setConnectionWriteInterest(fd_, needEnableWrite);
     }
     
-    // 触发写入
+    // 立即尝试写入，降低响应延迟
     onWrite();
 }
 
 void AgentConnection::close() {
-    // 防止重复关闭
-    if (fd_ < 0) {
-        return;
+    int fdToClose = -1;
+    std::string agentToUnregister;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+
+        if (fd_ < 0) {
+            return;
+        }
+        fdToClose = fd_;
+        fd_ = -1;
+
+        agentToUnregister = agentId_;
+        agentId_.clear();
+        writeEventEnabled_ = false;
     }
 
-    if (!agentId_.empty() && manager_) {
-        manager_->unregisterAgent(agentId_);
-        agentId_.clear();  // 清空，防止重复注销
+    if (!agentToUnregister.empty() && manager_) {
+        manager_->unregisterAgentByConnection(agentToUnregister, fdToClose);
     }
     if (manager_) {
-        manager_->removeConnectionByFd(fd_);
+        manager_->removeConnectionByFd(fdToClose);
     }
-    closeSocket(fd_);
+    closeSocket(fdToClose);
 }
 
 bool AgentConnection::sendMessage(const AgentMessage& msg) {
@@ -840,7 +905,12 @@ bool ClusterManager::registerAgent(const AgentInfo& info, int controlFd) {
     std::string effectiveHostname = info.hostname;
     std::vector<ServiceInfo> effectiveServices = info.services;
     
-    if (configIt != agentConfigs_.end()) {
+    if (!sharedToken_.empty() && info.authToken == sharedToken_) {
+        tokenValid = true;
+        LOG_INFO("Agent " + info.agentId + " authenticated by shared cluster token");
+    }
+
+    if (!tokenValid && configIt != agentConfigs_.end()) {
         // 使用预配置的完整配置
         if (configIt->second.token == info.authToken) {
             tokenValid = true;
@@ -856,7 +926,7 @@ bool ClusterManager::registerAgent(const AgentInfo& info, int controlFd) {
             }
             LOG_INFO("Using pre-configured IP for agent " + info.agentId + ": " + effectiveIp);
         }
-    } else if (tokenIt != agentTokens_.end()) {
+    } else if (!tokenValid && tokenIt != agentTokens_.end()) {
         // 简单格式，只验证 token
         if (tokenIt->second == info.authToken) {
             tokenValid = true;
@@ -876,6 +946,18 @@ bool ClusterManager::registerAgent(const AgentInfo& info, int controlFd) {
         return false;
     }
     
+    auto existingIt = agents_.find(info.agentId);
+    if (existingIt != agents_.end() && existingIt->second) {
+        if (!existingIt->second->hostname.empty()) {
+            hostnameToAgentId_.erase(existingIt->second->hostname);
+        }
+        if (existingIt->second->controlFd >= 0 && existingIt->second->controlFd != controlFd) {
+            pendingConnections_.erase(existingIt->second->controlFd);
+            LOG_WARN("Agent " + info.agentId + " re-registered with new control connection, old fd=" +
+                     std::to_string(existingIt->second->controlFd) + ", new fd=" + std::to_string(controlFd));
+        }
+    }
+
     auto agent = std::make_shared<AgentInfo>(info);
     agent->ipAddress = effectiveIp;  // 使用预配置的 IP
     agent->hostname = effectiveHostname;  // 使用有效的主机名
@@ -901,19 +983,33 @@ bool ClusterManager::registerAgent(const AgentInfo& info, int controlFd) {
 }
 
 void ClusterManager::unregisterAgent(const std::string& agentId) {
+    unregisterAgentByConnection(agentId, -1);
+}
+
+void ClusterManager::unregisterAgentByConnection(const std::string& agentId, int controlFd) {
     std::lock_guard<std::mutex> lock(mutex_);
     
     auto it = agents_.find(agentId);
-    if (it != agents_.end()) {
-        if (it->second->controlFd >= 0) {
-            pendingConnections_.erase(it->second->controlFd);
-        }
-        agentConnections_.erase(agentId);
-        it->second->isOnline = false;
-        hostnameToAgentId_.erase(it->second->hostname);
-        agents_.erase(it);
-        LOG_INFO("Agent unregistered: " + agentId);
+    if (it == agents_.end()) {
+        return;
     }
+
+    // 如果指定了 fd，则仅在 fd 匹配当前控制连接时才执行注销，避免旧连接误删新会话
+    if (controlFd >= 0 && it->second->controlFd != controlFd) {
+        LOG_DEBUG("Ignore stale unregister for agent " + agentId +
+                  ", stale fd=" + std::to_string(controlFd) +
+                  ", current fd=" + std::to_string(it->second->controlFd));
+        return;
+    }
+
+    if (it->second->controlFd >= 0) {
+        pendingConnections_.erase(it->second->controlFd);
+    }
+    agentConnections_.erase(agentId);
+    it->second->isOnline = false;
+    hostnameToAgentId_.erase(it->second->hostname);
+    agents_.erase(it);
+    LOG_INFO("Agent unregistered: " + agentId);
 }
 
 void ClusterManager::updateHeartbeat(const std::string& agentId) {
@@ -974,6 +1070,10 @@ size_t ClusterManager::getOnlineAgentCount() const {
 
 bool ClusterManager::verifyAgentToken(const std::string& agentId, const std::string& token) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    if (!sharedToken_.empty() && sharedToken_ == token) {
+        return true;
+    }
     
     // 先检查完整配置
     auto configIt = agentConfigs_.find(agentId);
@@ -1149,34 +1249,37 @@ void ClusterManager::onClose() {
 }
 
 void ClusterManager::acceptConnection() {
-    struct sockaddr_storage clientAddr;
-    socklen_t addrLen = sizeof(clientAddr);
-    
-    int clientFd = accept4(listenFd_, (struct sockaddr*)&clientAddr, &addrLen,
-                          SOCK_NONBLOCK | SOCK_CLOEXEC);
-    
-    if (clientFd < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            LOG_ERROR("Accept failed: " + std::string(strerror(errno)));
+    while (true) {
+        struct sockaddr_storage clientAddr;
+        socklen_t addrLen = sizeof(clientAddr);
+        int clientFd = accept4(listenFd_, reinterpret_cast<struct sockaddr*>(&clientAddr), &addrLen,
+                               SOCK_NONBLOCK | SOCK_CLOEXEC);
+        if (clientFd < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_ERROR("Accept failed: " + std::string(strerror(errno)));
+            }
+            break;
         }
-        return;
-    }
-    
-    // 创建 Agent 连接
-    auto conn = std::make_shared<AgentConnection>(clientFd, this);
-    conn->initialize();
 
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        pendingConnections_[clientFd] = conn;
+        // 创建 Agent 连接
+        auto conn = std::make_shared<AgentConnection>(clientFd, this);
+        conn->initialize();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pendingConnections_[clientFd] = conn;
+        }
+
+        // 添加到事件循环（默认不监听 WRITE，按需动态开启）
+        if (eventLoop_) {
+            eventLoop_->addHandler(clientFd, EventType::READ | EventType::ERROR | EventType::HUP, conn);
+        }
+
+        LOG_INFO("New agent connection accepted");
     }
-    
-    // 添加到事件循环
-    if (eventLoop_) {
-        eventLoop_->addHandler(clientFd, EventType::READ | EventType::ERROR | EventType::HUP, conn);
-    }
-    
-    LOG_INFO("New agent connection accepted");
 }
 
 void ClusterManager::removeConnectionByFd(int fd) {
@@ -1186,6 +1289,18 @@ void ClusterManager::removeConnectionByFd(int fd) {
 
     std::lock_guard<std::mutex> lock(mutex_);
     pendingConnections_.erase(fd);
+}
+
+void ClusterManager::setConnectionWriteInterest(int fd, bool enabled) {
+    if (!eventLoop_ || fd < 0) {
+        return;
+    }
+
+    EventType events = EventType::READ | EventType::ERROR | EventType::HUP;
+    if (enabled) {
+        events = events | EventType::WRITE;
+    }
+    eventLoop_->modifyHandler(fd, events);
 }
 
 bool ClusterManager::loadAgentTokens(const std::string& configPath) {
@@ -1294,6 +1409,11 @@ void ClusterManager::upsertAgentToken(const std::string& agentId, const std::str
 
     std::lock_guard<std::mutex> lock(mutex_);
     agentTokens_[agentId] = token;
+}
+
+void ClusterManager::setSharedToken(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sharedToken_ = token;
 }
 
 void ClusterManager::checkAgentHealth() {

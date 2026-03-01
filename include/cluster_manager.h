@@ -176,6 +176,9 @@ private:
     
     // 互斥锁
     mutable std::mutex mutex_;
+
+    // 是否已为该连接启用 EPOLLOUT 订阅
+    bool writeEventEnabled_{false};
 };
 
 // ============================================
@@ -210,6 +213,9 @@ public:
     
     // 注销Agent
     void unregisterAgent(const std::string& agentId);
+
+    // 基于控制连接 fd 的安全注销（避免旧连接误删新注册）
+    void unregisterAgentByConnection(const std::string& agentId, int controlFd);
     
     // 更新心跳
     void updateHeartbeat(const std::string& agentId);
@@ -247,11 +253,17 @@ public:
     // 移除连接（AgentConnection 关闭时调用）
     void removeConnectionByFd(int fd);
 
+    // 更新连接写事件订阅（AgentConnection 发送缓冲变化时调用）
+    void setConnectionWriteInterest(int fd, bool enabled);
+
     // 加载Agent token配置
     bool loadAgentTokens(const std::string& configPath);
 
     // 直接设置/覆盖单个 Agent token（CLI 场景）
     void upsertAgentToken(const std::string& agentId, const std::string& token);
+
+    // 设置集群共享 token（任意 agentId 使用同一 token 可注册）
+    void setSharedToken(const std::string& token);
     
 private:
     // 启动心跳检查
@@ -284,6 +296,9 @@ private:
     
     // Agent token映射 (agentId -> token) - 简单格式
     std::unordered_map<std::string, std::string> agentTokens_;
+
+    // 集群共享 token（所有 Agent 共用）
+    std::string sharedToken_;
     
     // Agent 预配置映射 (agentId -> 完整配置) - 完整格式
     std::unordered_map<std::string, AgentTokenConfig> agentConfigs_;

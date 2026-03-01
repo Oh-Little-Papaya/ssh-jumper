@@ -30,8 +30,8 @@ sudo make install
 ## 2. 准备启动参数（1 分钟）
 
 无需任何配置文件。你只需要准备：
-- 登录用户（`--user`）
-- Agent token（`--agent-token`）
+- 集群共享 token（`--token`）
+- 登录用户（可选，不传会自动创建 `admin/admin123`）
 - 用户权限（`--permission-*`，可选；不传默认 `allow_all=true`）
 
 ## 3. 启动服务器（1 分钟）
@@ -43,8 +43,8 @@ sudo ./ssh_jump_server \
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
+  --token my-secret-token \
   --user admin:admin123 \
-  --agent-token my-server:my-secret-token \
   --permission-allow-all admin \
   --default-target-user root
 
@@ -54,8 +54,8 @@ sudo ./ssh_jump_server \
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
+  --token my-secret-token \
   --user admin:admin123 \
-  --agent-token my-server:my-secret-token \
   --permission-allow-all admin \
   --default-target-user root \
   -d

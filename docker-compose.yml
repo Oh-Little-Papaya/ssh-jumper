@@ -47,7 +47,7 @@ services:
       - jump-network
     environment:
       - AGENT_ID=web-server-01
-      - AGENT_TOKEN=ws01-secret-token-2024
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=web-server-01
@@ -70,7 +70,7 @@ services:
       - jump-network
     environment:
       - AGENT_ID=api-server-01
-      - AGENT_TOKEN=api01-secret-token-2024
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=api-server-01
@@ -93,7 +93,7 @@ services:
       - jump-network
     environment:
       - AGENT_ID=db-server-01
-      - AGENT_TOKEN=db01-secret-token-2024
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=db-server-01
@@ -116,7 +116,7 @@ services:
       - jump-network
     environment:
       - AGENT_ID=cache-server-01
-      - AGENT_TOKEN=cs01-secret-token-2024
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=cache-server-01

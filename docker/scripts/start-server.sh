@@ -13,7 +13,8 @@ DEFAULT_TARGET_KEY_PASSWORD="${DEFAULT_TARGET_KEY_PASSWORD:-}"
 MAX_CONNECTIONS_PER_MINUTE="${MAX_CONNECTIONS_PER_MINUTE:-120}"
 
 SERVER_USERS="${SERVER_USERS:-admin:admin123,developer:dev123,ops:ops123}"
-SERVER_AGENT_TOKENS="${SERVER_AGENT_TOKENS:-web-server-01:ws01-secret-token-2024,api-server-01:api01-secret-token-2024,db-server-01:db01-secret-token-2024,cache-server-01:cs01-secret-token-2024}"
+CLUSTER_SHARED_TOKEN="${CLUSTER_SHARED_TOKEN:-cluster-secret-token}"
+SERVER_AGENT_TOKENS="${SERVER_AGENT_TOKENS:-}"
 SERVER_PERMISSION_ALLOW_ALL="${SERVER_PERMISSION_ALLOW_ALL:-admin}"
 SERVER_PERMISSION_ALLOW_PATTERN="${SERVER_PERMISSION_ALLOW_PATTERN:-developer:web-*,developer:api-*,ops:web-*,ops:db-*,ops:cache-*,ops:api-*}"
 SERVER_PERMISSION_DENY_ASSET="${SERVER_PERMISSION_DENY_ASSET:-ops:db-server-01}"
@@ -37,7 +38,8 @@ echo "[INFO] SSH 端口: $SSH_PORT"
 echo "[INFO] Agent 端口: $AGENT_PORT"
 echo ""
 echo "[INFO] 用户参数: $SERVER_USERS"
-echo "[INFO] Token 参数: $SERVER_AGENT_TOKENS"
+echo "[INFO] 共享 Token: $CLUSTER_SHARED_TOKEN"
+echo "[INFO] 额外按节点 Token(可选): ${SERVER_AGENT_TOKENS:-<none>}"
 echo "[INFO] 权限参数: allow_all=$SERVER_PERMISSION_ALLOW_ALL allow_pattern=$SERVER_PERMISSION_ALLOW_PATTERN deny_asset=$SERVER_PERMISSION_DENY_ASSET max_sessions=$SERVER_PERMISSION_MAX_SESSIONS"
 echo "[INFO] 子节点参数: $SERVER_CHILD_NODES"
 echo ""
@@ -71,6 +73,7 @@ append_csv_option() {
 }
 
 append_csv_option "--user" "$SERVER_USERS"
+SERVER_CMD+=(--token "$CLUSTER_SHARED_TOKEN")
 append_csv_option "--agent-token" "$SERVER_AGENT_TOKENS"
 append_csv_option "--permission-allow-all" "$SERVER_PERMISSION_ALLOW_ALL"
 append_csv_option "--permission-allow-pattern" "$SERVER_PERMISSION_ALLOW_PATTERN"

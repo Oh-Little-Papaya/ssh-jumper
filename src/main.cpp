@@ -47,7 +47,9 @@ void printUsage(const char* program) {
               << "      --cluster-listen-address <addr>    Cluster listen address (default: 0.0.0.0)\n"
               << "      --user <name:password>             Add user from CLI (repeatable)\n"
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
+              << "      --token <token>                    Shared cluster token for all agents\n"
               << "      --agent-token <id:token>           Add agent token from CLI (repeatable)\n"
+              << "                                         (if no --user, defaults to admin/admin123)\n"
               << "      --permission-allow-all <user>      Permission: allow all assets for user (repeatable)\n"
               << "      --permission-allow-asset <user:asset> Permission: allow specific asset (repeatable)\n"
               << "      --permission-allow-pattern <user:pattern> Permission: allow hostname pattern (repeatable)\n"
@@ -73,8 +75,8 @@ void printUsage(const char* program) {
               << "  3. Interactive: ssh -p 2222 admin@jump.example.com\n"
               << "  4. Quick:     ssh -p 2222 admin@jump.example.com @1\n"
               << "\nExamples:\n"
-              << "  " << program << " -p 2222 -a 8888 --user admin:admin123 --agent-token web-01:token\n"
-              << "  " << program << " -d --user admin:admin123 --agent-token web-01:token\n";
+              << "  " << program << " -p 2222 -a 8888 --token cluster-secret\n"
+              << "  " << program << " -d --token cluster-secret --user admin:admin123\n";
 }
 
 // 打印版本信息
@@ -270,6 +272,7 @@ int main(int argc, char* argv[]) {
     TempPathGuard generatedHostKeyGuard;
     std::vector<std::pair<std::string, std::string>> cliUsers;
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
+    std::string sharedClusterToken;
     std::vector<std::pair<std::string, std::string>> cliAgentTokens;
     std::unordered_map<std::string, UserPermission> cliPermissions;
     std::vector<ChildNodeInfo> cliChildNodes;
@@ -290,6 +293,7 @@ int main(int argc, char* argv[]) {
         OPT_CLUSTER_LISTEN_ADDRESS,
         OPT_USER,
         OPT_USER_HASH,
+        OPT_SHARED_TOKEN,
         OPT_AGENT_TOKEN,
         OPT_PERMISSION_ALLOW_ALL,
         OPT_PERMISSION_ALLOW_ASSET,
@@ -316,6 +320,7 @@ int main(int argc, char* argv[]) {
         {"cluster-listen-address", required_argument, nullptr, OPT_CLUSTER_LISTEN_ADDRESS},
         {"user", required_argument, nullptr, OPT_USER},
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
+        {"token", required_argument, nullptr, OPT_SHARED_TOKEN},
         {"agent-token", required_argument, nullptr, OPT_AGENT_TOKEN},
         {"permission-allow-all", required_argument, nullptr, OPT_PERMISSION_ALLOW_ALL},
         {"permission-allow-asset", required_argument, nullptr, OPT_PERMISSION_ALLOW_ASSET},
@@ -382,6 +387,9 @@ int main(int argc, char* argv[]) {
                 cliUsersHash.emplace_back(username, hashValue);
                 break;
             }
+            case OPT_SHARED_TOKEN:
+                sharedClusterToken = trimString(optarg);
+                break;
             case OPT_AGENT_TOKEN: {
                 std::string agentId;
                 std::string token;
@@ -610,9 +618,12 @@ int main(int argc, char* argv[]) {
         }
 
         if (config.users.empty()) {
-            LOG_FATAL("No users configured. Provide --user or --user-hash.");
-            ssh_finalize();
-            return 1;
+            UserAuthInfo defaultUser;
+            defaultUser.username = "admin";
+            defaultUser.passwordHash = sha256Hex("admin123");
+            defaultUser.enabled = true;
+            config.users[defaultUser.username] = defaultUser;
+            LOG_WARN("No users configured, auto-created default user admin/admin123");
         }
     }
 
@@ -668,16 +679,21 @@ int main(int argc, char* argv[]) {
         clusterConfig.reverseTunnelPortEnd,
         clusterConfig.reverseTunnelRetries,
         clusterConfig.reverseTunnelAcceptTimeoutMs);
+
+    if (!sharedClusterToken.empty()) {
+        clusterManager->setSharedToken(sharedClusterToken);
+        LOG_INFO("Loaded shared cluster token from --token");
+    }
     
     // 加载 Agent token（纯 CLI 注入）
-    bool hasAgentTokens = false;
+    bool hasAgentTokens = !sharedClusterToken.empty();
     for (const auto& tokenSpec : cliAgentTokens) {
         clusterManager->upsertAgentToken(tokenSpec.first, tokenSpec.second);
         hasAgentTokens = true;
         LOG_INFO("Loaded CLI agent-token for id: " + tokenSpec.first);
     }
     if (!hasAgentTokens) {
-        LOG_FATAL("No agent tokens configured. Provide --agent-token.");
+        LOG_FATAL("No cluster token configured. Provide --token or --agent-token.");
         removePidFile(pidFile);
         ssh_finalize();
         return 1;

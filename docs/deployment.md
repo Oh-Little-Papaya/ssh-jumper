@@ -76,8 +76,8 @@ rm -rf /tmp/ssh_jump_build
 `ssh_jump_server` 现在是纯 CLI 参数驱动，不再读取任何配置文件。
 
 建议将运行参数固定在 systemd `ExecStart`（见下一节），至少配置：
-- `--user` / `--user-hash`（可重复）
-- `--agent-token`（可重复）
+- `--token`（集群共享 token）
+- `--user` / `--user-hash`（可选，可重复；不传会自动生成 `admin/admin123`）
 - `--permission-*`（可选，不传默认 `allow_all=true`）
 - `--child-node`（可选，可重复）
 
@@ -89,8 +89,8 @@ rm -rf /tmp/ssh_jump_build
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
+  --token cluster-secret-token \
   --user admin:ChangeMe123! \
-  --agent-token web-server-01:token-web-01 \
   --permission-allow-all admin \
   --child-node public-mgr-01:jump.example.com:2222:8888:public-mgr-01 \
   --default-target-user root
@@ -109,7 +109,7 @@ After=network.target
 Type=simple
 User=sshjump
 Group=sshjump
-ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --user admin:ChangeMe123! --agent-token web-server-01:token-web-01 --permission-allow-all admin --default-target-user root
+ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! --permission-allow-all admin --default-target-user root
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure
@@ -405,7 +405,7 @@ find /backup/ssh_jump -type d -mtime +30 -exec rm -rf {} \;
    # 检查日志
    sudo tail -f /var/log/ssh_jump/server.log
    
-   # 验证当前启动参数中是否包含正确 --agent-token
+   # 验证当前启动参数中是否包含正确 --token
    ps -ef | grep ssh_jump_server
    ```
 
@@ -413,7 +413,7 @@ find /backup/ssh_jump -type d -mtime +30 -exec rm -rf {} \;
 
 ```bash
 # 前台运行，详细日志
-sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --user admin:ChangeMe123! --agent-token web-server-01:token-web-01 --permission-allow-all admin -v
+sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token cluster-secret-token --user admin:ChangeMe123! --permission-allow-all admin -v
 
 # 使用 strace
 sudo strace -f -e trace=network /opt/ssh_jump/ssh_jump_server -v
