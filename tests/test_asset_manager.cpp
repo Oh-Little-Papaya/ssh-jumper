@@ -365,7 +365,7 @@ TEST(asset_manager_on_asset_changed_callback, "资产管理") {
     bool addedFlag = false;
     
     // 注册回调
-    manager.onAssetChanged([&callbackCalled, &addedFlag](const AssetInfo& asset, bool added) {
+    manager.onAssetChanged([&callbackCalled, &addedFlag](const AssetInfo&, bool added) {
         callbackCalled = true;
         addedFlag = added;
     });

@@ -679,7 +679,7 @@ TEST(cluster_manager_start_stop, "集群管理") {
     // 这里只测试基本功能
     
     // 尝试启动（可能会失败，因为没有初始化）
-    bool result = manager.start();
+    (void)manager.start();
     // 不强制要求成功，只验证函数可调用
     
     // 停止
