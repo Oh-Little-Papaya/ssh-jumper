@@ -513,19 +513,50 @@ TEST(config_validate_creates_default_user, "配置管理") {
 }
 
 TEST(config_user_disabled, "配置管理") {
-    // 注意：当前实现中不支持禁用用户，但可以测试基本功能
     ConfigManager config;
     
     const char* userFile = "/tmp/test_users_disabled.conf";
     std::ofstream ufile(userFile);
     ufile << "active_user = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9\n";
+    ufile << "disabled_user = 240be518fabd2724ddb6f04eeb1da5967448d7e831c08c8fa822809f74c720a9:disabled\n";
     ufile.close();
     
     config.loadUsers(userFile);
     std::remove(userFile);
     
-    // 测试已加载用户可以认证
+    // 激活用户可以认证
     ASSERT_TRUE(config.verifyUserPassword("active_user", "admin123"));
+    ASSERT_TRUE(config.userExists("active_user"));
+
+    // disabled 标记应生效
+    ASSERT_FALSE(config.verifyUserPassword("disabled_user", "admin123"));
+    ASSERT_FALSE(config.userExists("disabled_user"));
     
+    return true;
+}
+
+TEST(config_validate_auth_methods_invalid, "配置管理") {
+    const char* testFile = "/tmp/test_config_auth_methods_invalid.conf";
+    const char* userFile = "/tmp/test_users_auth_methods_invalid.conf";
+
+    std::ofstream file(testFile);
+    file << "[ssh]\n";
+    file << "auth_methods = keyboard-interactive\n";
+    file << "[security]\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_FALSE(config.validate());
     return true;
 }

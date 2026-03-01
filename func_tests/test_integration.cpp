@@ -25,7 +25,7 @@ FUNC_TEST_WITH_TIMEOUT(complete_workflow, "集成测试", 30) {
     
     // 2. 启动 Agent
     std::cout << "\n    [2/5] 启动 Agent... " << std::flush;
-    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", "web01-secret-token", "web-server-01"));
+    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", g_testEnv.getClusterToken(), "web-server-01"));
     std::this_thread::sleep_for(std::chrono::seconds(2));
     FUNC_ASSERT_TRUE(g_testEnv.isAgentRunning());
     std::cout << "OK (PID: " << g_testEnv.getAgentPid() << ")" << std::flush;
@@ -75,7 +75,7 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-s", "127.0.0.1",
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "web-01",
-        "-t", "web01-secret-token",
+        "-t", g_testEnv.getClusterToken(),
         "-n", "web-server-01"
     };
     FUNC_ASSERT_TRUE(agent1.start(g_testEnv.getAgentBinary(), args1));
@@ -84,7 +84,7 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-s", "127.0.0.1",
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "web-02",
-        "-t", "web02-secret-token",
+        "-t", g_testEnv.getClusterToken(),
         "-n", "web-server-02"
     };
     FUNC_ASSERT_TRUE(agent2.start(g_testEnv.getAgentBinary(), args2));
@@ -93,7 +93,7 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-s", "127.0.0.1",
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "db-01",
-        "-t", "db01-secret-token",
+        "-t", g_testEnv.getClusterToken(),
         "-n", "db-server-01"
     };
     FUNC_ASSERT_TRUE(agent3.start(g_testEnv.getAgentBinary(), args3));

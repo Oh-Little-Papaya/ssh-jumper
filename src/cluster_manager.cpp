@@ -36,15 +36,6 @@ constexpr int kPbkdf2Iterations = 100000;
 constexpr int kPbkdf2SaltLength = 32;
 constexpr int kPbkdf2HashLength = 64;
 
-std::string bytesToHex(const unsigned char* data, size_t len) {
-    std::ostringstream oss;
-    for (size_t i = 0; i < len; ++i) {
-        oss << std::hex << std::setw(2) << std::setfill('0')
-            << static_cast<int>(data[i]);
-    }
-    return oss.str();
-}
-
 std::string hashPasswordPbkdf2(const std::string& password) {
     std::vector<unsigned char> salt(kPbkdf2SaltLength, 0);
     if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
@@ -618,89 +609,73 @@ void AgentConnection::handleMessage(const AgentMessage& msg) {
 }
 
 void AgentConnection::handleRegister(const std::string& payload) {
-    // 解析 JSON 注册信息
-    // 格式: {"agentId":"xxx","hostname":"xxx","ipAddress":"xxx","authToken":"xxx","services":[...]}
-    
-    auto extractString = [&payload](const std::string& key) -> std::string {
-        std::string searchKey = "\"" + key + "\":\"";
-        size_t pos = payload.find(searchKey);
-        if (pos == std::string::npos) return "";
-        pos += searchKey.length();
-        size_t endPos = payload.find("\"", pos);
-        if (endPos == std::string::npos) return "";
-        return payload.substr(pos, endPos - pos);
-    };
-    
+    using json = nlohmann::json;
+
+    json registerJson;
+    try {
+        json raw = json::parse(payload);
+        if (raw.is_object() && raw.contains("secure")) {
+            const std::string agentIdHint = trimString(raw.value("agentId", ""));
+            const auto& secure = raw["secure"];
+            if (!secure.is_object()) {
+                sendResponse(false, "Invalid secure register payload");
+                return;
+            }
+
+            std::string decrypted;
+            std::string tokenUsed;
+            if (!manager_ || !manager_->decryptAgentPayload(
+                                agentIdHint,
+                                trimString(secure.value("iv", "")),
+                                trimString(secure.value("ciphertext", "")),
+                                trimString(secure.value("tag", "")),
+                                decrypted,
+                                &tokenUsed)) {
+                sendResponse(false, "Unauthorized");
+                return;
+            }
+
+            registerJson = json::parse(decrypted);
+            if (registerJson.value("authToken", "").empty()) {
+                registerJson["authToken"] = tokenUsed;
+            }
+        } else {
+            registerJson = std::move(raw);
+        }
+    } catch (const std::exception&) {
+        sendResponse(false, "Invalid register payload");
+        return;
+    }
+
     AgentInfo info;
-    info.agentId = extractString("agentId");
-    info.hostname = extractString("hostname");
-    info.ipAddress = extractString("ipAddress");
-    info.authToken = extractString("authToken");
-    
+    info.agentId = trimString(registerJson.value("agentId", ""));
+    info.hostname = trimString(registerJson.value("hostname", ""));
+    info.ipAddress = trimString(registerJson.value("ipAddress", ""));
+    info.authToken = trimString(registerJson.value("authToken", ""));
+
     if (info.agentId.empty()) {
         LOG_WARN("Invalid register payload: missing agentId");
         sendResponse(false, "Missing agentId");
         return;
     }
-    
-    // 解析 services 数组 (简化解析)
-    size_t servicesPos = payload.find("\"services\":");
-    if (servicesPos != std::string::npos) {
-        size_t arrStart = payload.find("[", servicesPos);
-        size_t arrEnd = payload.find("]", arrStart);
-        if (arrStart != std::string::npos && arrEnd != std::string::npos) {
-            std::string servicesStr = payload.substr(arrStart + 1, arrEnd - arrStart - 1);
-            // 简化的服务解析，每个服务格式: {"name":"xxx","type":"yyy","port":zzz}
-            size_t pos = 0;
-            while ((pos = servicesStr.find("{", pos)) != std::string::npos) {
-                size_t endPos = servicesStr.find("}", pos);
-                if (endPos == std::string::npos) break;
-                
-                std::string svcStr = servicesStr.substr(pos, endPos - pos + 1);
-                ServiceInfo svc;
-                
-                auto extractSvcString = [&svcStr](const std::string& key) -> std::string {
-                    std::string searchKey = "\"" + key + "\":\"";
-                    size_t p = svcStr.find(searchKey);
-                    if (p == std::string::npos) return "";
-                    p += searchKey.length();
-                    size_t ep = svcStr.find("\"", p);
-                    if (ep == std::string::npos) return "";
-                    return svcStr.substr(p, ep - p);
-                };
-                
-                svc.name = extractSvcString("name");
-                svc.type = extractSvcString("type");
 
-                // 解析 port 数字（安全处理）
-                size_t portPos = svcStr.find("\"port\":");
-                if (portPos != std::string::npos) {
-                    portPos += 7; // length of "\"port\":"
-                    std::string portStr = svcStr.substr(portPos);
-                    // 提取数字部分（直到遇到非数字字符）
-                    std::string portNum;
-                    for (char c : portStr) {
-                        if (std::isdigit(c)) {
-                            portNum += c;
-                        } else {
-                            break;
-                        }
-                    }
-                    if (!portNum.empty()) {
-                        try {
-                            svc.port = std::stoi(portNum);
-                        } catch (...) {
-                            svc.port = 22;  // 默认 SSH 端口
-                        }
-                    }
-                }
-                
-                info.services.push_back(svc);
-                pos = endPos + 1;
+    if (registerJson.contains("services") && registerJson["services"].is_array()) {
+        for (const auto& item : registerJson["services"]) {
+            if (!item.is_object()) {
+                continue;
             }
+            ServiceInfo svc;
+            svc.name = trimString(item.value("name", ""));
+            svc.type = trimString(item.value("type", ""));
+            svc.port = item.value("port", 22);
+            if (svc.port <= 0 || svc.port > 65535) {
+                svc.port = 22;
+            }
+            svc.description = trimString(item.value("description", ""));
+            info.services.push_back(std::move(svc));
         }
     }
-    
+
     // 设置连接 fd 并注册
     info.controlFd = fd_;
     if (manager_->registerAgent(info, fd_)) {
@@ -730,18 +705,60 @@ void AgentConnection::handleUnregister(const std::string& /*payload*/) {
 void AgentConnection::handleCommand(const std::string& payload) {
     using json = nlohmann::json;
 
-    json req;
+    json rawReq;
     try {
-        req = json::parse(payload);
+        rawReq = json::parse(payload);
     } catch (const std::exception&) {
         sendResponse(false, "Invalid command payload");
         return;
     }
 
-    const std::string token = trimString(req.value("token", ""));
-    if (!manager_ || !manager_->validateAdminToken(token)) {
-        sendResponse(false, "Unauthorized");
+    bool secureMode = false;
+    json req;
+    try {
+        if (rawReq.is_object() && rawReq.contains("secure")) {
+            const auto& secure = rawReq["secure"];
+            if (!secure.is_object()) {
+                sendResponse(false, "Invalid secure payload");
+                return;
+            }
+
+            std::string decrypted;
+            if (!manager_ || !manager_->decryptAdminPayload(
+                                trimString(secure.value("iv", "")),
+                                trimString(secure.value("ciphertext", "")),
+                                trimString(secure.value("tag", "")),
+                                decrypted)) {
+                sendResponse(false, "Unauthorized");
+                return;
+            }
+
+            req = json::parse(decrypted);
+            secureMode = true;
+        } else {
+            req = std::move(rawReq);
+        }
+    } catch (const std::exception&) {
+        sendResponse(false, "Invalid command payload");
         return;
+    }
+
+    if (!secureMode) {
+        const std::string token = trimString(req.value("adminToken", req.value("token", "")));
+        if (!manager_ || !manager_->validateAdminToken(token)) {
+            sendResponse(false, "Unauthorized");
+            return;
+        }
+    }
+
+    const int64_t requestTs = req.value("ts", static_cast<int64_t>(0));
+    if (requestTs > 0) {
+        const auto now = std::chrono::system_clock::now();
+        const int64_t nowTs = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+        if (requestTs < (nowTs - 300) || requestTs > (nowTs + 300)) {
+            sendResponse(false, "Request expired");
+            return;
+        }
     }
 
     const std::string op = trimString(req.value("op", ""));
@@ -755,7 +772,7 @@ void AgentConnection::handleCommand(const std::string& payload) {
         item["agentId"] = cfg.agentId;
         item["ipAddress"] = cfg.ipAddress;
         item["hostname"] = cfg.hostname;
-        item["token"] = cfg.token;
+        item["hasToken"] = !cfg.token.empty();
         item["online"] = false;
 
         if (manager_) {
@@ -776,9 +793,6 @@ void AgentConnection::handleCommand(const std::string& payload) {
         item["mustChangePassword"] = user.mustChangePassword;
         item["hasPublicKey"] = !user.publicKey.empty();
         item["passwordHashType"] = user.isPbkdf2Hash() ? "PBKDF2" : "SHA256";
-        if (!user.publicKey.empty()) {
-            item["publicKey"] = user.publicKey;
-        }
         return item;
     };
 
@@ -794,21 +808,11 @@ void AgentConnection::handleCommand(const std::string& payload) {
     }
 
     if (op == "list_users") {
-        auto& config = ConfigManager::getInstance().getServerConfig();
-        std::vector<std::string> usernames;
-        usernames.reserve(config.users.size());
-        for (const auto& pair : config.users) {
-            usernames.push_back(pair.first);
-        }
-        std::sort(usernames.begin(), usernames.end());
-
+        auto users = ConfigManager::getInstance().listUsers();
         json resp;
         resp["users"] = json::array();
-        for (const auto& username : usernames) {
-            auto it = config.users.find(username);
-            if (it != config.users.end()) {
-                resp["users"].push_back(userToJson(it->second));
-            }
+        for (const auto& user : users) {
+            resp["users"].push_back(userToJson(user));
         }
         sendResponse(true, resp.dump());
         return;
@@ -821,24 +825,19 @@ void AgentConnection::handleCommand(const std::string& payload) {
             return;
         }
 
-        auto& config = ConfigManager::getInstance().getServerConfig();
-        auto it = config.users.find(username);
+        auto& configManager = ConfigManager::getInstance();
 
         if (op == "get_user") {
-            if (it == config.users.end()) {
+            auto user = configManager.getUser(username);
+            if (!user) {
                 sendResponse(false, "User not found");
                 return;
             }
-            sendResponse(true, userToJson(it->second).dump());
+            sendResponse(true, userToJson(*user).dump());
             return;
         }
 
         if (op == "create_user") {
-            if (it != config.users.end()) {
-                sendResponse(false, "User already exists");
-                return;
-            }
-
             const std::string password = req.value("password", "");
             const std::string passwordHash = trimString(req.value("passwordHash", ""));
             if (password.empty() && passwordHash.empty()) {
@@ -858,59 +857,73 @@ void AgentConnection::handleCommand(const std::string& payload) {
                 return;
             }
 
-            config.users[user.username] = user;
-            sendResponse(true, userToJson(user).dump());
+            if (!configManager.createUser(user)) {
+                sendResponse(false, "User already exists");
+                return;
+            }
+
+            auto created = configManager.getUser(username);
+            sendResponse(true, userToJson(created.value_or(user)).dump());
             return;
         }
 
         if (op == "update_user") {
-            if (it == config.users.end()) {
+            if (!configManager.getUser(username)) {
                 sendResponse(false, "User not found");
                 return;
             }
 
-            if (req.contains("password")) {
-                const std::string password = req.value("password", "");
-                if (password.empty()) {
-                    sendResponse(false, "Empty password");
-                    return;
+            const bool updated = configManager.updateUser(username, [&](UserAuthInfo& user) {
+                if (req.contains("password")) {
+                    const std::string password = req.value("password", "");
+                    if (password.empty()) {
+                        return false;
+                    }
+                    user.passwordHash = hashPasswordPbkdf2(password);
+                    if (user.passwordHash.empty()) {
+                        return false;
+                    }
                 }
-                it->second.passwordHash = hashPasswordPbkdf2(password);
-                if (it->second.passwordHash.empty()) {
-                    sendResponse(false, "Failed to hash password");
-                    return;
+                if (req.contains("passwordHash")) {
+                    const std::string passwordHashValue = trimString(req.value("passwordHash", ""));
+                    if (passwordHashValue.empty()) {
+                        return false;
+                    }
+                    user.passwordHash = passwordHashValue;
                 }
-            }
-            if (req.contains("passwordHash")) {
-                const std::string passwordHash = trimString(req.value("passwordHash", ""));
-                if (passwordHash.empty()) {
-                    sendResponse(false, "Empty passwordHash");
-                    return;
+                if (req.contains("publicKey")) {
+                    user.publicKey = trimString(req.value("publicKey", ""));
                 }
-                it->second.passwordHash = passwordHash;
-            }
-            if (req.contains("publicKey")) {
-                it->second.publicKey = trimString(req.value("publicKey", ""));
-            }
-            if (req.value("clearPublicKey", false)) {
-                it->second.publicKey.clear();
-            }
-            if (req.contains("mustChangePassword")) {
-                it->second.mustChangePassword = req.value("mustChangePassword", false);
-            }
-            if (req.contains("enabled")) {
-                it->second.enabled = req.value("enabled", true);
+                if (req.value("clearPublicKey", false)) {
+                    user.publicKey.clear();
+                }
+                if (req.contains("mustChangePassword")) {
+                    user.mustChangePassword = req.value("mustChangePassword", false);
+                }
+                if (req.contains("enabled")) {
+                    user.enabled = req.value("enabled", true);
+                }
+                return true;
+            });
+
+            if (!updated) {
+                sendResponse(false, "Failed to update user");
+                return;
             }
 
-            sendResponse(true, userToJson(it->second).dump());
+            auto updatedUser = configManager.getUser(username);
+            if (!updatedUser) {
+                sendResponse(false, "User not found");
+                return;
+            }
+            sendResponse(true, userToJson(*updatedUser).dump());
             return;
         }
 
-        if (it == config.users.end()) {
+        if (!configManager.deleteUser(username)) {
             sendResponse(false, "User not found");
             return;
         }
-        config.users.erase(it);
         sendResponse(true, "Deleted");
         return;
     }
@@ -1390,22 +1403,26 @@ size_t ClusterManager::getOnlineAgentCount() const {
 }
 
 bool ClusterManager::verifyAgentToken(const std::string& agentId, const std::string& token) {
+    if (token.empty()) {
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(mutex_);
 
-    if (!sharedToken_.empty() && sharedToken_ == token) {
+    if (!sharedToken_.empty() && timingSafeEqual(sharedToken_, token)) {
         return true;
     }
     
     // 先检查完整配置
     auto configIt = agentConfigs_.find(agentId);
     if (configIt != agentConfigs_.end()) {
-        return configIt->second.token == token;
+        return timingSafeEqual(configIt->second.token, token);
     }
     
     // 再检查简单 token 格式
     auto tokenIt = agentTokens_.find(agentId);
     if (tokenIt != agentTokens_.end()) {
-        return tokenIt->second == token;
+        return timingSafeEqual(tokenIt->second, token);
     }
     
     return false;
@@ -1417,7 +1434,60 @@ bool ClusterManager::validateAdminToken(const std::string& token) const {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
-    return !sharedToken_.empty() && sharedToken_ == token;
+    return !adminToken_.empty() && timingSafeEqual(adminToken_, token);
+}
+
+bool ClusterManager::decryptAdminPayload(const std::string& ivHex,
+                                         const std::string& ciphertextHex,
+                                         const std::string& tagHex,
+                                         std::string& plaintext) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (adminToken_.empty()) {
+        return false;
+    }
+    return decryptWithTokenAesGcm(ivHex, ciphertextHex, tagHex, adminToken_, plaintext);
+}
+
+bool ClusterManager::decryptAgentPayload(const std::string& agentIdHint,
+                                         const std::string& ivHex,
+                                         const std::string& ciphertextHex,
+                                         const std::string& tagHex,
+                                         std::string& plaintext,
+                                         std::string* tokenUsed) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto tryDecrypt = [&](const std::string& token) -> bool {
+        if (token.empty()) {
+            return false;
+        }
+        std::string decrypted;
+        if (!decryptWithTokenAesGcm(ivHex, ciphertextHex, tagHex, token, decrypted)) {
+            return false;
+        }
+        plaintext = std::move(decrypted);
+        if (tokenUsed) {
+            *tokenUsed = token;
+        }
+        return true;
+    };
+
+    if (!agentIdHint.empty()) {
+        auto configIt = agentConfigs_.find(agentIdHint);
+        if (configIt != agentConfigs_.end() && tryDecrypt(configIt->second.token)) {
+            return true;
+        }
+
+        auto simpleIt = agentTokens_.find(agentIdHint);
+        if (simpleIt != agentTokens_.end() && tryDecrypt(simpleIt->second)) {
+            return true;
+        }
+    }
+
+    if (tryDecrypt(sharedToken_)) {
+        return true;
+    }
+
+    return false;
 }
 
 std::vector<AgentTokenConfig> ClusterManager::listConfiguredAgents() const {
@@ -1821,6 +1891,11 @@ void ClusterManager::setSharedToken(const std::string& token) {
     sharedToken_ = token;
 }
 
+void ClusterManager::setAdminToken(const std::string& token) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    adminToken_ = token;
+}
+
 void ClusterManager::checkAgentHealth() {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -1904,23 +1979,41 @@ bool ClusterAgentClient::registerToCluster(const std::vector<ServiceInfo>& servi
         LOG_INFO("Using auto-detected IP: " + localIp);
     }
     
-    // 构建注册消息 - 发送完整的 JSON 信息
-    // 格式: {"agentId":"xxx","hostname":"xxx","ipAddress":"xxx","authToken":"xxx","services":[{"name":"ssh","type":"ssh","port":22}]}
-    std::string payload = "{";
-    payload += "\"agentId\":\"" + agentId_ + "\",";
-    payload += "\"hostname\":\"" + hostname_ + "\",";
-    payload += "\"ipAddress\":\"" + localIp + "\",";
-    payload += "\"authToken\":\"" + authToken_ + "\",";
-    payload += "\"services\":[";
-    for (size_t i = 0; i < services.size(); ++i) {
-        if (i > 0) payload += ",";
-        payload += "{";
-        payload += "\"name\":\"" + services[i].name + "\",";
-        payload += "\"type\":\"" + services[i].type + "\",";
-        payload += "\"port\":" + std::to_string(services[i].port);
-        payload += "}";
+    using json = nlohmann::json;
+    json registerReq;
+    registerReq["agentId"] = agentId_;
+    registerReq["hostname"] = hostname_;
+    registerReq["ipAddress"] = localIp;
+    registerReq["authToken"] = authToken_;
+    registerReq["services"] = json::array();
+    for (const auto& service : services) {
+        json item;
+        item["name"] = service.name;
+        item["type"] = service.type;
+        item["port"] = service.port;
+        if (!service.description.empty()) {
+            item["description"] = service.description;
+        }
+        registerReq["services"].push_back(std::move(item));
     }
-    payload += "]}";
+
+    std::string ivHex;
+    std::string ciphertextHex;
+    std::string tagHex;
+    if (!encryptWithTokenAesGcm(registerReq.dump(), authToken_, ivHex, ciphertextHex, tagHex)) {
+        LOG_ERROR("Failed to encrypt register payload");
+        return false;
+    }
+
+    json wireReq;
+    wireReq["agentId"] = agentId_;
+    wireReq["secure"] = {
+        {"alg", "AES-256-GCM"},
+        {"iv", ivHex},
+        {"ciphertext", ciphertextHex},
+        {"tag", tagHex}
+    };
+    const std::string payload = wireReq.dump();
     
     AgentMessage msg = AgentMessage::create(AgentMessageType::REGISTER, payload);
     

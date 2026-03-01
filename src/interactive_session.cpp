@@ -892,7 +892,7 @@ bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
 
     // 从配置获取目标连接凭据
     auto& configManager = ConfigManager::getInstance();
-    auto& securityConfig = configManager.getServerConfig().security;
+    const auto securityConfig = configManager.getServerConfig().security;
     std::string targetUser = securityConfig.defaultTargetUser.empty() ? "root" : securityConfig.defaultTargetUser;
     std::string targetPassword = securityConfig.defaultTargetPassword;
     std::string targetPrivateKey = securityConfig.defaultTargetPrivateKey;

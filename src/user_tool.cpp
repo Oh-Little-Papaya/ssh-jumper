@@ -18,6 +18,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstring>
+#include <cerrno>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <iomanip>
@@ -165,10 +166,16 @@ bool saveUsers(const std::string& path, const std::vector<UserInfo>& users) {
     size_t lastSlash = dir.find_last_of('/');
     if (lastSlash != std::string::npos) {
         dir = dir.substr(0, lastSlash);
-        mkdir(dir.c_str(), 0755);
+        if (!dir.empty()) {
+            if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
+                std::cerr << "Error: Failed to create directory: " << dir << std::endl;
+                return false;
+            }
+            chmod(dir.c_str(), 0700);
+        }
     }
 
-    std::ofstream file(path);
+    std::ofstream file(path, std::ios::out | std::ios::trunc);
     if (!file.is_open()) {
         std::cerr << "Error: Cannot open file for writing: " << path << std::endl;
         return false;
@@ -193,6 +200,9 @@ bool saveUsers(const std::string& path, const std::vector<UserInfo>& users) {
     }
 
     file.close();
+    if (chmod(path.c_str(), 0600) != 0) {
+        std::cerr << "Warning: Failed to set secure permissions on " << path << std::endl;
+    }
     return true;
 }
 

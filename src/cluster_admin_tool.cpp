@@ -18,25 +18,26 @@ constexpr uint32_t kMaxMessageSize = 10 * 1024 * 1024;
 void printHelp(const char* program) {
     std::cout << "SSH Jump Cluster Admin Tool\n\n"
               << "Node commands:\n"
-              << "  " << program << " --list-nodes --token <shared_token> [--server <addr>] [--port <port>]\n"
-              << "  " << program << " --get-node <agent_id> --token <shared_token> [--server <addr>] [--port <port>]\n"
-              << "  " << program << " --add-node <agent_id> --ip <ip> --node-token <token> --token <shared_token> [--hostname <name>]\n"
-              << "  " << program << " --update-node <agent_id> --token <shared_token> [--ip <ip>] [--node-token <token>] [--hostname <name>]\n"
-              << "  " << program << " --delete-node <agent_id> --token <shared_token> [--server <addr>] [--port <port>]\n\n"
+              << "  " << program << " --list-nodes --admin-token <token> [--server <addr>] [--port <port>]\n"
+              << "  " << program << " --get-node <agent_id> --admin-token <token> [--server <addr>] [--port <port>]\n"
+              << "  " << program << " --add-node <agent_id> --ip <ip> --node-token <token> --admin-token <token> [--hostname <name>]\n"
+              << "  " << program << " --update-node <agent_id> --admin-token <token> [--ip <ip>] [--node-token <token>] [--hostname <name>]\n"
+              << "  " << program << " --delete-node <agent_id> --admin-token <token> [--server <addr>] [--port <port>]\n\n"
               << "User commands:\n"
-              << "  " << program << " --list-users --token <shared_token> [--server <addr>] [--port <port>]\n"
-              << "  " << program << " --get-user <username> --token <shared_token> [--server <addr>] [--port <port>]\n"
-              << "  " << program << " --add-user <username> --token <shared_token> (--password <pwd> | --password-hash <hash>) [--public-key <key>] [--must-change] [--enabled|--disabled]\n"
-              << "  " << program << " --update-user <username> --token <shared_token> [--password <pwd>] [--password-hash <hash>] [--public-key <key>|--clear-public-key] [--must-change|--no-must-change] [--enabled|--disabled]\n"
-              << "  " << program << " --delete-user <username> --token <shared_token> [--server <addr>] [--port <port>]\n\n"
+              << "  " << program << " --list-users --admin-token <token> [--server <addr>] [--port <port>]\n"
+              << "  " << program << " --get-user <username> --admin-token <token> [--server <addr>] [--port <port>]\n"
+              << "  " << program << " --add-user <username> --admin-token <token> (--password <pwd> | --password-hash <hash>) [--public-key <key>] [--must-change] [--enabled|--disabled]\n"
+              << "  " << program << " --update-user <username> --admin-token <token> [--password <pwd>] [--password-hash <hash>] [--public-key <key>|--clear-public-key] [--must-change|--no-must-change] [--enabled|--disabled]\n"
+              << "  " << program << " --delete-user <username> --admin-token <token> [--server <addr>] [--port <port>]\n\n"
               << "Options:\n"
               << "  --server <addr>          Cluster server address (default: 127.0.0.1)\n"
               << "  --port <port>            Cluster server port (default: 8888)\n"
-              << "  --token <token>          Shared cluster token (admin auth)\n"
+              << "  --admin-token <token>    Admin API token\n"
+              << "  --token <token>          Alias of --admin-token (backward compatible)\n"
               << "  --ip <ip>                Node IP address\n"
               << "  --hostname <name>        Node hostname\n"
               << "  --node-token <token>     Node token for agent registration\n"
-              << "  --password <pwd>         User password (tool sends plaintext; server hashes)\n"
+              << "  --password <pwd>         User password (encrypted transport; server hashes)\n"
               << "  --password-hash <hash>   User password hash (PBKDF2$... or SHA256 hex)\n"
               << "  --public-key <key>       User public key\n"
               << "  --clear-public-key       Clear user public key\n"
@@ -187,7 +188,7 @@ int main(int argc, char* argv[]) {
     std::string cmd;
     std::string server = "127.0.0.1";
     int port = kDefaultPort;
-    std::string token;
+    std::string adminToken;
 
     std::string agentId;
     std::string ipAddress;
@@ -276,8 +277,8 @@ int main(int argc, char* argv[]) {
             port = sshjump::safeStringToInt(argv[++i], kDefaultPort);
             continue;
         }
-        if (arg == "--token" && i + 1 < argc) {
-            token = argv[++i];
+        if ((arg == "--admin-token" || arg == "--token") && i + 1 < argc) {
+            adminToken = argv[++i];
             continue;
         }
 
@@ -349,8 +350,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    if (token.empty()) {
-        std::cerr << "--token is required\n";
+    if (adminToken.empty()) {
+        std::cerr << "--admin-token is required\n";
         return 1;
     }
 
@@ -389,7 +390,9 @@ int main(int argc, char* argv[]) {
 
     json req;
     req["op"] = cmd;
-    req["token"] = token;
+    req["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+    req["nonce"] = sshjump::generateUUID();
 
     if (!agentId.empty()) {
         req["agentId"] = agentId;
@@ -426,6 +429,22 @@ int main(int argc, char* argv[]) {
         req["enabled"] = enabled;
     }
 
+    std::string ivHex;
+    std::string ciphertextHex;
+    std::string tagHex;
+    if (!sshjump::encryptWithTokenAesGcm(req.dump(), adminToken, ivHex, ciphertextHex, tagHex)) {
+        std::cerr << "Failed to encrypt command payload\n";
+        return 1;
+    }
+
+    json wireReq;
+    wireReq["secure"] = {
+        {"alg", "AES-256-GCM"},
+        {"iv", ivHex},
+        {"ciphertext", ciphertextHex},
+        {"tag", tagHex}
+    };
+
     int fd = connectToServer(server, port);
     if (fd < 0) {
         std::cerr << "Failed to connect to " << server << ":" << port << "\n";
@@ -433,7 +452,7 @@ int main(int argc, char* argv[]) {
     }
 
     const sshjump::AgentMessage request =
-        sshjump::AgentMessage::create(sshjump::AgentMessageType::COMMAND, req.dump());
+        sshjump::AgentMessage::create(sshjump::AgentMessageType::COMMAND, wireReq.dump());
     const auto raw = request.serialize();
     if (!sendAll(fd, raw.data(), raw.size())) {
         close(fd);

@@ -16,6 +16,27 @@ constexpr int PBKDF2_ITERATIONS = 100000;
 constexpr int PBKDF2_SALT_LENGTH = 32;
 constexpr int PBKDF2_HASH_LENGTH = 64;
 
+bool parseAuthMethodsMask(const std::string& raw, bool& hasUnknown) {
+    hasUnknown = false;
+    int methodCount = 0;
+
+    for (const auto& tokenRaw : splitString(raw, ',')) {
+        const std::string token = trimString(tokenRaw);
+        if (token.empty()) {
+            continue;
+        }
+
+        if (token == "password" || token == "publickey" || token == "public_key") {
+            ++methodCount;
+        } else {
+            hasUnknown = true;
+            LOG_ERROR("Unsupported auth method: " + token);
+        }
+    }
+
+    return methodCount > 0;
+}
+
 // 全局日志级别定义
 std::atomic<LogLevel> g_logLevel{LogLevel::INFO};
 
@@ -32,6 +53,7 @@ bool ConfigManager::loadFromFile(const std::string& path) {
         return false;
     }
 
+    ServerConfig loadedConfig;
     std::string line;
     std::string currentSection;
 
@@ -48,20 +70,97 @@ bool ConfigManager::loadFromFile(const std::string& path) {
             continue;
         }
 
-        // 解析键值对并直接处理（移除冗余的 parseLine 调用）
-        parseLine(line, currentSection);
+        parseLine(line, currentSection, loadedConfig);
     }
 
     file.close();
+
+    {
+        std::unique_lock<std::shared_mutex> lock(configMutex_);
+        serverConfig_ = loadedConfig;
+        serverConfig_.users.clear();
+    }
+
     LOG_INFO("Config loaded from: " + path);
 
-    // 加载用户认证配置
-    loadUsers(serverConfig_.security.usersFile);
-
+    // 加载用户认证配置（保持兼容：即使加载失败，主配置加载仍视为成功）
+    loadUsers(loadedConfig.security.usersFile);
     return true;
 }
 
-void ConfigManager::parseLine(const std::string& line, std::string& currentSection) {
+ServerConfig ConfigManager::getServerConfig() const {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+    return serverConfig_;
+}
+
+void ConfigManager::updateServerConfig(const std::function<void(ServerConfig&)>& updater) {
+    if (!updater) {
+        return;
+    }
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+    updater(serverConfig_);
+}
+
+std::vector<UserAuthInfo> ConfigManager::listUsers() const {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+    std::vector<UserAuthInfo> users;
+    users.reserve(serverConfig_.users.size());
+    for (const auto& pair : serverConfig_.users) {
+        users.push_back(pair.second);
+    }
+    std::sort(users.begin(), users.end(), [](const UserAuthInfo& a, const UserAuthInfo& b) {
+        return a.username < b.username;
+    });
+    return users;
+}
+
+std::optional<UserAuthInfo> ConfigManager::getUser(const std::string& username) const {
+    if (username.empty()) {
+        return std::nullopt;
+    }
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+    auto it = serverConfig_.users.find(username);
+    if (it == serverConfig_.users.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+bool ConfigManager::createUser(const UserAuthInfo& user) {
+    if (user.username.empty() || user.passwordHash.empty()) {
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+    if (serverConfig_.users.find(user.username) != serverConfig_.users.end()) {
+        return false;
+    }
+    serverConfig_.users[user.username] = user;
+    return true;
+}
+
+bool ConfigManager::updateUser(const std::string& username, const std::function<bool(UserAuthInfo&)>& updater) {
+    if (username.empty() || !updater) {
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+    auto it = serverConfig_.users.find(username);
+    if (it == serverConfig_.users.end()) {
+        return false;
+    }
+    return updater(it->second);
+}
+
+bool ConfigManager::deleteUser(const std::string& username) {
+    if (username.empty()) {
+        return false;
+    }
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+    return serverConfig_.users.erase(username) > 0;
+}
+
+void ConfigManager::parseLine(const std::string& line, const std::string& currentSection, ServerConfig& config) {
     size_t pos = line.find('=');
     if (pos == std::string::npos) {
         return;
@@ -75,49 +174,49 @@ void ConfigManager::parseLine(const std::string& line, std::string& currentSecti
     }
 
     if (currentSection == "ssh") {
-        if (key == "listen_address") serverConfig_.ssh.listenAddress = value;
-        else if (key == "port") serverConfig_.ssh.port = safeStringToInt(value, DEFAULT_SSH_PORT);
-        else if (key == "host_key_path") serverConfig_.ssh.hostKeyPath = value;
-        else if (key == "auth_methods") serverConfig_.ssh.authMethods = value;
-        else if (key == "permit_root_login") serverConfig_.ssh.permitRootLogin = (value == "true");
-        else if (key == "max_auth_tries") serverConfig_.ssh.maxAuthTries = safeStringToInt(value, 3);
-        else if (key == "idle_timeout") serverConfig_.ssh.idleTimeout = safeStringToInt(value, 300);
+        if (key == "listen_address") config.ssh.listenAddress = value;
+        else if (key == "port") config.ssh.port = safeStringToInt(value, DEFAULT_SSH_PORT);
+        else if (key == "host_key_path") config.ssh.hostKeyPath = value;
+        else if (key == "auth_methods") config.ssh.authMethods = value;
+        else if (key == "permit_root_login") config.ssh.permitRootLogin = (value == "true");
+        else if (key == "max_auth_tries") config.ssh.maxAuthTries = safeStringToInt(value, 3);
+        else if (key == "idle_timeout") config.ssh.idleTimeout = safeStringToInt(value, 300);
     }
     else if (currentSection == "cluster") {
-        if (key == "listen_address") serverConfig_.cluster.listenAddress = value;
-        else if (key == "port") serverConfig_.cluster.port = safeStringToInt(value, DEFAULT_CLUSTER_PORT);
-        else if (key == "agent_token_file") serverConfig_.cluster.agentTokenFile = value;
-        else if (key == "heartbeat_interval") serverConfig_.cluster.heartbeatInterval = safeStringToInt(value, DEFAULT_HEARTBEAT_INTERVAL);
-        else if (key == "heartbeat_timeout") serverConfig_.cluster.heartbeatTimeout = safeStringToInt(value, 90);
-        else if (key == "reverse_tunnel_port_start") serverConfig_.cluster.reverseTunnelPortStart = safeStringToInt(value, 38000);
-        else if (key == "reverse_tunnel_port_end") serverConfig_.cluster.reverseTunnelPortEnd = safeStringToInt(value, 38199);
-        else if (key == "reverse_tunnel_retries") serverConfig_.cluster.reverseTunnelRetries = safeStringToInt(value, 3);
-        else if (key == "reverse_tunnel_accept_timeout_ms") serverConfig_.cluster.reverseTunnelAcceptTimeoutMs = safeStringToInt(value, 7000);
+        if (key == "listen_address") config.cluster.listenAddress = value;
+        else if (key == "port") config.cluster.port = safeStringToInt(value, DEFAULT_CLUSTER_PORT);
+        else if (key == "agent_token_file") config.cluster.agentTokenFile = value;
+        else if (key == "heartbeat_interval") config.cluster.heartbeatInterval = safeStringToInt(value, DEFAULT_HEARTBEAT_INTERVAL);
+        else if (key == "heartbeat_timeout") config.cluster.heartbeatTimeout = safeStringToInt(value, 90);
+        else if (key == "reverse_tunnel_port_start") config.cluster.reverseTunnelPortStart = safeStringToInt(value, 38000);
+        else if (key == "reverse_tunnel_port_end") config.cluster.reverseTunnelPortEnd = safeStringToInt(value, 38199);
+        else if (key == "reverse_tunnel_retries") config.cluster.reverseTunnelRetries = safeStringToInt(value, 3);
+        else if (key == "reverse_tunnel_accept_timeout_ms") config.cluster.reverseTunnelAcceptTimeoutMs = safeStringToInt(value, 7000);
     }
     else if (currentSection == "assets") {
-        if (key == "refresh_interval") serverConfig_.assets.refreshInterval = safeStringToInt(value, 30);
-        else if (key == "permissions_file") serverConfig_.assets.permissionsFile = value;
+        if (key == "refresh_interval") config.assets.refreshInterval = safeStringToInt(value, 30);
+        else if (key == "permissions_file") config.assets.permissionsFile = value;
     }
     else if (currentSection == "logging") {
-        if (key == "level") serverConfig_.logging.level = value;
-        else if (key == "log_file") serverConfig_.logging.logFile = value;
-        else if (key == "audit_log") serverConfig_.logging.auditLog = value;
-        else if (key == "session_recording") serverConfig_.logging.sessionRecording = (value == "true");
-        else if (key == "session_path") serverConfig_.logging.sessionPath = value;
+        if (key == "level") config.logging.level = value;
+        else if (key == "log_file") config.logging.logFile = value;
+        else if (key == "audit_log") config.logging.auditLog = value;
+        else if (key == "session_recording") config.logging.sessionRecording = (value == "true");
+        else if (key == "session_path") config.logging.sessionPath = value;
     }
     else if (currentSection == "security") {
-        if (key == "command_audit") serverConfig_.security.commandAudit = (value == "true");
-        else if (key == "allow_port_forwarding") serverConfig_.security.allowPortForwarding = (value == "true");
-        else if (key == "allow_sftp") serverConfig_.security.allowSftp = (value == "true");
-        else if (key == "max_connections_per_minute") serverConfig_.security.maxConnectionsPerMinute = safeStringToInt(value, 0);
-        else if (key == "users_file") serverConfig_.security.usersFile = value;
-        else if (key == "default_target_user") serverConfig_.security.defaultTargetUser = value;
-        else if (key == "default_target_password") serverConfig_.security.defaultTargetPassword = value;
-        else if (key == "default_target_private_key") serverConfig_.security.defaultTargetPrivateKey = value;
-        else if (key == "default_target_key_password") serverConfig_.security.defaultTargetPrivateKeyPassword = value;
+        if (key == "command_audit") config.security.commandAudit = (value == "true");
+        else if (key == "allow_port_forwarding") config.security.allowPortForwarding = (value == "true");
+        else if (key == "allow_sftp") config.security.allowSftp = (value == "true");
+        else if (key == "max_connections_per_minute") config.security.maxConnectionsPerMinute = safeStringToInt(value, 0);
+        else if (key == "users_file") config.security.usersFile = value;
+        else if (key == "default_target_user") config.security.defaultTargetUser = value;
+        else if (key == "default_target_password") config.security.defaultTargetPassword = value;
+        else if (key == "default_target_private_key") config.security.defaultTargetPrivateKey = value;
+        else if (key == "default_target_key_password") config.security.defaultTargetPrivateKeyPassword = value;
     }
     else if (currentSection == "management") {
-        if (key == "child_nodes_file") serverConfig_.management.childNodesFile = value;
+        if (key == "child_nodes_file") config.management.childNodesFile = value;
     }
 }
 
@@ -130,6 +229,7 @@ bool ConfigManager::loadUsers(const std::string& path) {
         return false;
     }
 
+    std::unordered_map<std::string, UserAuthInfo> loadedUsers;
     std::string line;
     while (std::getline(file, line)) {
         line = trimString(line);
@@ -138,7 +238,7 @@ bool ConfigManager::loadUsers(const std::string& path) {
             continue;
         }
 
-        // 格式: username = password_hash [:public_key] [:must_change]
+        // 格式: username = password_hash [:public_key] [:must_change] [:disabled]
         size_t pos = line.find('=');
         if (pos == std::string::npos) {
             continue;
@@ -154,40 +254,40 @@ bool ConfigManager::loadUsers(const std::string& path) {
         UserAuthInfo user;
         user.username = username;
 
-        // 解析各个部分
         std::vector<std::string> parts = splitString(value, ':');
         if (parts.empty()) {
             continue;
         }
 
-        // 第一部分是密码哈希
         user.passwordHash = trimString(parts[0]);
-
-        // 检查剩余部分
         for (size_t i = 1; i < parts.size(); i++) {
             std::string part = trimString(parts[i]);
-
             if (part == "must_change") {
                 user.mustChangePassword = true;
-            } else if (part.substr(0, 7) == "ssh-rsa" ||
-                       part.substr(0, 7) == "ssh-ed2" ||
-                       part.substr(0, 8) == "ssh-ed25519" ||
-                       part.substr(0, 7) == "ecdsa-") {
-                // 公钥
+            } else if (part == "disabled") {
+                user.enabled = false;
+            } else if (part.rfind("ssh-rsa", 0) == 0 ||
+                       part.rfind("ssh-ed2", 0) == 0 ||
+                       part.rfind("ssh-ed25519", 0) == 0 ||
+                       part.rfind("ecdsa-", 0) == 0) {
                 user.publicKey = part;
             } else if (part.find("SHA256:") == 0 || part.length() >= 32) {
-                // 可能是公钥指纹
                 user.publicKey = part;
             }
         }
 
-        user.enabled = true;
-        serverConfig_.users[username] = user;
+        loadedUsers[username] = user;
         LOG_INFO("Loaded user: " + username);
     }
 
     file.close();
-    LOG_INFO("Users loaded from: " + path + ", total: " + std::to_string(serverConfig_.users.size()));
+
+    {
+        std::unique_lock<std::shared_mutex> lock(configMutex_);
+        serverConfig_.users = std::move(loadedUsers);
+        LOG_INFO("Users loaded from: " + path + ", total: " + std::to_string(serverConfig_.users.size()));
+    }
+
     return true;
 }
 
@@ -332,6 +432,8 @@ std::string ConfigManager::generateSalt(size_t length) {
 }
 
 bool ConfigManager::verifyUserPassword(const std::string& username, const std::string& password) {
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+
     auto it = serverConfig_.users.find(username);
     if (it == serverConfig_.users.end()) {
         return false;
@@ -365,6 +467,8 @@ bool ConfigManager::verifyUserPassword(const std::string& username, const std::s
 }
 
 bool ConfigManager::verifyUserPublicKey(const std::string& username, const std::string& publicKey) {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+
     auto it = serverConfig_.users.find(username);
     if (it == serverConfig_.users.end()) {
         return false;
@@ -398,11 +502,14 @@ bool ConfigManager::verifyUserPublicKey(const std::string& username, const std::
 }
 
 bool ConfigManager::userExists(const std::string& username) {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
     auto it = serverConfig_.users.find(username);
     return it != serverConfig_.users.end() && it->second.enabled;
 }
 
 bool ConfigManager::validate() {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+
     // 验证必要配置
     if (serverConfig_.ssh.port <= 0 || serverConfig_.ssh.port > 65535) {
         LOG_ERROR("Invalid SSH port");
@@ -441,6 +548,12 @@ bool ConfigManager::validate() {
         return false;
     }
 
+    bool hasUnknownAuthMethod = false;
+    if (!parseAuthMethodsMask(serverConfig_.ssh.authMethods, hasUnknownAuthMethod) || hasUnknownAuthMethod) {
+        LOG_ERROR("Invalid ssh.auth_methods, expected a comma-separated list of password/publickey");
+        return false;
+    }
+
     // 检查是否至少有一个用户
     if (serverConfig_.users.empty()) {
         LOG_ERROR("No users configured!");
@@ -453,6 +566,8 @@ bool ConfigManager::validate() {
 }
 
 void ConfigManager::printConfig() {
+    std::shared_lock<std::shared_mutex> lock(configMutex_);
+
     LOG_INFO("=== Server Configuration ===");
     LOG_INFO("SSH:");
     LOG_INFO("  Listen: " + serverConfig_.ssh.listenAddress + ":" + std::to_string(serverConfig_.ssh.port));

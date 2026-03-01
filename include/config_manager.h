@@ -135,15 +135,18 @@ public:
     // 检查用户是否存在
     bool userExists(const std::string& username);
 
-    // 获取服务器配置（线程安全）
-    ServerConfig& getServerConfig() {
-        std::unique_lock<std::shared_mutex> lock(configMutex_);
-        return serverConfig_;
-    }
-    const ServerConfig& getServerConfig() const {
-        std::shared_lock<std::shared_mutex> lock(configMutex_);
-        return serverConfig_;
-    }
+    // 获取服务器配置快照（线程安全）
+    ServerConfig getServerConfig() const;
+
+    // 以写锁方式更新配置
+    void updateServerConfig(const std::function<void(ServerConfig&)>& updater);
+
+    // 用户配置线程安全 CRUD
+    std::vector<UserAuthInfo> listUsers() const;
+    std::optional<UserAuthInfo> getUser(const std::string& username) const;
+    bool createUser(const UserAuthInfo& user);
+    bool updateUser(const std::string& username, const std::function<bool(UserAuthInfo&)>& updater);
+    bool deleteUser(const std::string& username);
     
     // 验证配置
     bool validate();
@@ -153,7 +156,7 @@ public:
     
 private:
     // 解析配置行
-    void parseLine(const std::string& line, std::string& currentSection);
+    static void parseLine(const std::string& line, const std::string& currentSection, ServerConfig& config);
     
     // 计算密码 SHA256 哈希
     std::string hashPassword(const std::string& password);

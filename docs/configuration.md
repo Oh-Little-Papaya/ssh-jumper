@@ -12,11 +12,13 @@
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --token cluster-secret-token
+  --token cluster-secret-token \
+  --admin-token admin-secret-token \
+  --user admin:Admin123!
 ```
 
 说明：
-- 不传 `--user/--user-hash` 时会自动创建默认用户 `admin/admin123`。
+- 启动时必须通过 `--user/--user-hash` 提供至少一个用户。
 - 权限策略固定为：所有已配置用户默认可访问全部资产。
 - 主机密钥自动生成，无需提供文件路径。
 
@@ -27,6 +29,7 @@
 - `--listen-address` SSH 监听地址，默认 `0.0.0.0`
 - `--cluster-listen-address` Agent 集群监听地址，默认 `0.0.0.0`
 - `--token` 集群共享 token（推荐）
+- `--admin-token` 管理接口 token（`ssh_jump_cluster_admin_tool` 使用）
 - `--user` 用户明文密码，格式 `name:password`，可重复
 - `--user-hash` 用户哈希密码，格式 `name:hash`，可重复
 - 权限策略固定为默认全资产访问，无需权限参数
@@ -50,9 +53,10 @@
   -p 2222 \
   -a 8888 \
   --token cluster-secret-token \
-  --user admin:admin123 \
-  --user developer:dev123 \
-  --user ops:ops123 \
+  --admin-token admin-secret-token \
+  --user admin:Admin123! \
+  --user developer:Dev123! \
+  --user ops:Ops123! \
   --default-target-user root
 ```
 

@@ -5,6 +5,7 @@
 
 #include "node_registry.h"
 #include <sys/stat.h>
+#include <cerrno>
 
 namespace sshjump {
 
@@ -125,11 +126,16 @@ bool ChildNodeRegistry::saveToFile(const std::string& path) const {
     if (slash != std::string::npos) {
         dir = dir.substr(0, slash);
         if (!dir.empty()) {
-            mkdir(dir.c_str(), 0755);
+            if (mkdir(dir.c_str(), 0700) != 0 && errno != EEXIST) {
+                LOG_ERROR("Failed to create child node directory: " + dir +
+                          ", err=" + std::string(strerror(errno)));
+                return false;
+            }
+            chmod(dir.c_str(), 0700);
         }
     }
 
-    std::ofstream file(path);
+    std::ofstream file(path, std::ios::out | std::ios::trunc);
     if (!file.is_open()) {
         LOG_ERROR("Failed to open child node file for write: " + path);
         return false;
@@ -159,6 +165,7 @@ bool ChildNodeRegistry::saveToFile(const std::string& path) const {
     }
 
     file.close();
+    chmod(path.c_str(), 0600);
     return true;
 }
 

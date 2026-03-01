@@ -12,10 +12,36 @@
 #include "interactive_session.h"
 #include "config_manager.h"
 #include <algorithm>
+#include <cctype>
 #include <sys/stat.h>
 #include <iomanip>
 
 namespace sshjump {
+
+namespace {
+
+int resolveAuthMethodsMask(const std::string& rawMethods) {
+    int mask = 0;
+    for (const auto& tokenRaw : splitString(rawMethods, ',')) {
+        std::string token = trimString(tokenRaw);
+        std::transform(token.begin(), token.end(), token.begin(), ::tolower);
+        if (token == "password") {
+            mask |= SSH_AUTH_METHOD_PASSWORD;
+        } else if (token == "publickey" || token == "public_key") {
+            mask |= SSH_AUTH_METHOD_PUBLICKEY;
+        } else if (!token.empty()) {
+            LOG_WARN("Unsupported SSH auth method ignored: " + token);
+        }
+    }
+
+    // 安全兜底：至少保留公钥认证
+    if (mask == 0) {
+        mask = SSH_AUTH_METHOD_PUBLICKEY;
+    }
+    return mask;
+}
+
+} // namespace
 
 // ============================================
 // ConnectionRateLimiter 实现
@@ -278,8 +304,13 @@ bool SSHConnection::initialize() {
 }
 
 void SSHConnection::start() {
-    // 设置认证方法
-    ssh_set_auth_methods(session_, SSH_AUTH_METHOD_PASSWORD | SSH_AUTH_METHOD_PUBLICKEY);
+    const auto config = ConfigManager::getInstance().getServerConfig();
+    const int authMethodsMask = resolveAuthMethodsMask(config.ssh.authMethods);
+    const bool allowPassword = (authMethodsMask & SSH_AUTH_METHOD_PASSWORD) != 0;
+    const bool allowPublicKey = (authMethodsMask & SSH_AUTH_METHOD_PUBLICKEY) != 0;
+
+    // 设置认证方法（由配置驱动）
+    ssh_set_auth_methods(session_, authMethodsMask);
     
     // 处理密钥交换
     int rc = ssh_handle_key_exchange(session_);
@@ -310,9 +341,9 @@ void SSHConnection::start() {
         int msgSubtype = ssh_message_subtype(message);
         
         if (msgType == SSH_REQUEST_AUTH) {
-            if (msgSubtype == SSH_AUTH_METHOD_PASSWORD) {
+            if (msgSubtype == SSH_AUTH_METHOD_PASSWORD && allowPassword) {
                 handlePasswordAuth(message);
-            } else if (msgSubtype == SSH_AUTH_METHOD_PUBLICKEY) {
+            } else if (msgSubtype == SSH_AUTH_METHOD_PUBLICKEY && allowPublicKey) {
                 handlePublickeyAuth(message);
             } else {
                 ssh_message_reply_default(message);

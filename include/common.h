@@ -362,6 +362,25 @@ inline int safeStringToInt(const std::string& str, int defaultValue = 0) {
     }
 }
 
+// 常量时间字符串比较（用于 token 等敏感值校验）
+bool timingSafeEqual(const std::string& a, const std::string& b);
+
+// 十六进制编码/解码
+std::string bytesToHex(const uint8_t* data, size_t len);
+bool hexToBytes(const std::string& hex, std::vector<uint8_t>& out);
+
+// 使用 token 派生密钥进行 AES-256-GCM 加解密
+bool encryptWithTokenAesGcm(const std::string& plaintext,
+                            const std::string& token,
+                            std::string& ivHex,
+                            std::string& ciphertextHex,
+                            std::string& tagHex);
+bool decryptWithTokenAesGcm(const std::string& ivHex,
+                            const std::string& ciphertextHex,
+                            const std::string& tagHex,
+                            const std::string& token,
+                            std::string& plaintext);
+
 // 定时器线程类
 class TimerThread {
 public:

@@ -25,6 +25,10 @@ struct TestConfig {
     int clusterPort = 28888;    // 测试用集群端口
     std::string serverBinary;
     std::string agentBinary;
+    std::string clusterToken = "cluster-test-token";
+    std::string adminToken = "admin-test-token";
+    std::string adminUser = "admin";
+    std::string adminPassword = "Admin123!";
     
     TestConfig() {
         workDir = "/tmp/ssh_jump_func_test";
@@ -169,7 +173,13 @@ public:
     
     bool startServer() {
         std::vector<std::string> args = {
-            "-c", config_.workDir + "/etc/server.conf"
+            "-p", std::to_string(config_.sshPort),
+            "-a", std::to_string(config_.clusterPort),
+            "--listen-address", "127.0.0.1",
+            "--cluster-listen-address", "127.0.0.1",
+            "--token", config_.clusterToken,
+            "--admin-token", config_.adminToken,
+            "--user", config_.adminUser + ":" + config_.adminPassword
         };
         return serverProcess_.start(config_.serverBinary, args);
     }
@@ -210,6 +220,7 @@ public:
     std::string getWorkDir() const { return config_.workDir; }
     int getSshPort() const { return config_.sshPort; }
     int getClusterPort() const { return config_.clusterPort; }
+    const std::string& getClusterToken() const { return config_.clusterToken; }
     int getServerPid() const { return serverProcess_.getPid(); }
     int getAgentPid() const { return agentProcess_.getPid(); }
     const std::string& getServerBinary() const { return config_.serverBinary; }

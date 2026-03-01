@@ -238,8 +238,22 @@ public:
     // 验证Agent token
     bool verifyAgentToken(const std::string& agentId, const std::string& token);
 
-    // 验证管理命令 token（与共享集群 token 一致）
+    // 验证管理命令 token（独立 admin token）
     bool validateAdminToken(const std::string& token) const;
+
+    // 使用 admin token 解密安全管理请求
+    bool decryptAdminPayload(const std::string& ivHex,
+                             const std::string& ciphertextHex,
+                             const std::string& tagHex,
+                             std::string& plaintext) const;
+
+    // 使用共享 token/节点 token 解密安全注册请求
+    bool decryptAgentPayload(const std::string& agentIdHint,
+                             const std::string& ivHex,
+                             const std::string& ciphertextHex,
+                             const std::string& tagHex,
+                             std::string& plaintext,
+                             std::string* tokenUsed = nullptr) const;
 
     // 获取/维护集群节点配置（内存态）
     std::vector<AgentTokenConfig> listConfiguredAgents() const;
@@ -276,6 +290,9 @@ public:
 
     // 设置集群共享 token（任意 agentId 使用同一 token 可注册）
     void setSharedToken(const std::string& token);
+
+    // 设置管理 API token（admin 专用）
+    void setAdminToken(const std::string& token);
     
 private:
     // 启动心跳检查
@@ -311,6 +328,9 @@ private:
 
     // 集群共享 token（所有 Agent 共用）
     std::string sharedToken_;
+
+    // 管理接口独立 token（与 sharedToken_ 分离）
+    std::string adminToken_;
     
     // Agent 预配置映射 (agentId -> 完整配置) - 完整格式
     std::unordered_map<std::string, AgentTokenConfig> agentConfigs_;

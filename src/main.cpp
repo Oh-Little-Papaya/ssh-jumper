@@ -20,8 +20,8 @@
 
 #include <getopt.h>
 #include <filesystem>
-#include <iomanip>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 #include <sstream>
 #include <system_error>
 #include <sys/stat.h>
@@ -48,7 +48,7 @@ void printUsage(const char* program) {
               << "      --user <name:password>             Add user from CLI (repeatable)\n"
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
               << "      --token <token>                    Shared cluster token for all agents\n"
-              << "                                         (if no --user, defaults to admin/admin123)\n"
+              << "      --admin-token <token>              Admin API token (for cluster admin tool)\n"
               << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable)\n"
               << "      --default-target-user <user>       Default target SSH user (default: root)\n"
               << "      --default-target-password <pass>   Default target SSH password\n"
@@ -69,8 +69,8 @@ void printUsage(const char* program) {
               << "  3. Interactive: ssh -p 2222 admin@jump.example.com\n"
               << "  4. Quick:     ssh -p 2222 admin@jump.example.com @1\n"
               << "\nExamples:\n"
-              << "  " << program << " -p 2222 -a 8888 --token cluster-secret\n"
-              << "  " << program << " -d --token cluster-secret --user admin:admin123\n";
+              << "  " << program << " -p 2222 -a 8888 --token cluster-secret --admin-token admin-secret --user admin:StrongPass123\n"
+              << "  " << program << " -d --token cluster-secret --admin-token admin-secret --user-hash admin:PBKDF2$100000$...$...\n";
 }
 
 // 打印版本信息
@@ -157,15 +157,32 @@ bool splitSpec(const std::string& spec, char delimiter, std::string& left, std::
     return !left.empty() && !right.empty();
 }
 
-std::string sha256Hex(const std::string& plainText) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<const unsigned char*>(plainText.data()), plainText.size(), hash);
+std::string hashPasswordPbkdf2(const std::string& plainText) {
+    constexpr int kIterations = 100000;
+    constexpr int kSaltLength = 32;
+    constexpr int kHashLength = 64;
+
+    std::vector<uint8_t> salt(kSaltLength, 0);
+    if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
+        return "";
+    }
+
+    std::vector<uint8_t> hash(kHashLength, 0);
+    if (PKCS5_PBKDF2_HMAC(plainText.c_str(),
+                          static_cast<int>(plainText.size()),
+                          salt.data(),
+                          static_cast<int>(salt.size()),
+                          kIterations,
+                          EVP_sha512(),
+                          static_cast<int>(hash.size()),
+                          hash.data()) != 1) {
+        return "";
+    }
 
     std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; ++i) {
-        oss << std::setw(2) << static_cast<int>(hash[i]);
-    }
+    oss << "PBKDF2$" << kIterations << "$"
+        << bytesToHex(salt.data(), salt.size()) << "$"
+        << bytesToHex(hash.data(), hash.size());
     return oss.str();
 }
 
@@ -258,6 +275,7 @@ int main(int argc, char* argv[]) {
     std::vector<std::pair<std::string, std::string>> cliUsers;
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
     std::string sharedClusterToken;
+    std::string adminApiToken;
     std::vector<ChildNodeInfo> cliChildNodes;
     std::string defaultTargetUser = "root";
     std::string defaultTargetPassword;
@@ -277,6 +295,7 @@ int main(int argc, char* argv[]) {
         OPT_USER,
         OPT_USER_HASH,
         OPT_SHARED_TOKEN,
+        OPT_ADMIN_TOKEN,
         OPT_CHILD_NODE,
         OPT_DEFAULT_TARGET_USER,
         OPT_DEFAULT_TARGET_PASSWORD,
@@ -298,6 +317,7 @@ int main(int argc, char* argv[]) {
         {"user", required_argument, nullptr, OPT_USER},
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
         {"token", required_argument, nullptr, OPT_SHARED_TOKEN},
+        {"admin-token", required_argument, nullptr, OPT_ADMIN_TOKEN},
         {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
         {"default-target-user", required_argument, nullptr, OPT_DEFAULT_TARGET_USER},
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
@@ -360,6 +380,9 @@ int main(int argc, char* argv[]) {
             }
             case OPT_SHARED_TOKEN:
                 sharedClusterToken = trimString(optarg);
+                break;
+            case OPT_ADMIN_TOKEN:
+                adminApiToken = trimString(optarg);
                 break;
             case OPT_CHILD_NODE: {
                 ChildNodeInfo node;
@@ -467,8 +490,7 @@ int main(int argc, char* argv[]) {
     
     // 将命令行参数写入运行配置（不读取配置文件）
     auto& configManager = ConfigManager::getInstance();
-    {
-        auto& config = configManager.getServerConfig();
+    configManager.updateServerConfig([&](ServerConfig& config) {
         config.ssh.listenAddress = sshListenAddr;
         config.ssh.port = sshPort;
         config.ssh.hostKeyPath = hostKeyPath;
@@ -491,16 +513,18 @@ int main(int argc, char* argv[]) {
         config.security.maxConnectionsPerMinute = maxConnectionsPerMinute;
 
         config.management.childNodesFile.clear();
-    }
+    });
 
-    {
-        auto& config = configManager.getServerConfig();
-
+    configManager.updateServerConfig([&](ServerConfig& config) {
         for (const auto& userSpec : cliUsers) {
             UserAuthInfo user;
             user.username = userSpec.first;
-            user.passwordHash = sha256Hex(userSpec.second);
+            user.passwordHash = hashPasswordPbkdf2(userSpec.second);
             user.enabled = true;
+            if (user.passwordHash.empty()) {
+                LOG_FATAL("Failed to hash CLI password for user: " + user.username);
+                continue;
+            }
             config.users[user.username] = user;
             LOG_INFO("Loaded CLI user (plain password): " + user.username);
         }
@@ -513,15 +537,13 @@ int main(int argc, char* argv[]) {
             config.users[user.username] = user;
             LOG_INFO("Loaded CLI user-hash: " + user.username);
         }
+    });
 
-        if (config.users.empty()) {
-            UserAuthInfo defaultUser;
-            defaultUser.username = "admin";
-            defaultUser.passwordHash = sha256Hex("admin123");
-            defaultUser.enabled = true;
-            config.users[defaultUser.username] = defaultUser;
-            LOG_WARN("No users configured, auto-created default user admin/admin123");
-        }
+    const auto currentConfig = configManager.getServerConfig();
+    if (currentConfig.users.empty()) {
+        LOG_FATAL("No users configured. Use --user or --user-hash to bootstrap at least one account.");
+        ssh_finalize();
+        return 1;
     }
 
     if (!configManager.validate()) {
@@ -563,7 +585,8 @@ int main(int argc, char* argv[]) {
     
     // 创建并启动集群管理器 (用于内网机器注册)
     auto clusterManager = std::make_shared<ClusterManager>();
-    auto& clusterConfig = configManager.getServerConfig().cluster;
+    const auto runtimeConfig = configManager.getServerConfig();
+    const auto& clusterConfig = runtimeConfig.cluster;
     if (!clusterManager->initialize(clusterConfig.listenAddress, clusterConfig.port, eventLoop)) {
         LOG_FATAL("Failed to initialize cluster manager");
         removePidFile(pidFile);
@@ -581,9 +604,21 @@ int main(int argc, char* argv[]) {
         clusterManager->setSharedToken(sharedClusterToken);
         LOG_INFO("Loaded shared cluster token from --token");
     }
+
+    if (!adminApiToken.empty()) {
+        clusterManager->setAdminToken(adminApiToken);
+        LOG_INFO("Loaded admin API token from --admin-token");
+    }
     
     if (sharedClusterToken.empty()) {
         LOG_FATAL("No cluster token configured. Provide --token.");
+        removePidFile(pidFile);
+        ssh_finalize();
+        return 1;
+    }
+
+    if (adminApiToken.empty()) {
+        LOG_FATAL("No admin API token configured. Provide --admin-token.");
         removePidFile(pidFile);
         ssh_finalize();
         return 1;
@@ -612,7 +647,7 @@ int main(int argc, char* argv[]) {
     LOG_INFO("Child node registry ready, count=" + std::to_string(nodeRegistry->size()));
     
     // 权限策略简化：所有已配置用户默认允许访问全部资产
-    const auto& users = configManager.getServerConfig().users;
+    const auto& users = runtimeConfig.users;
     for (const auto& pair : users) {
         if (!pair.second.enabled) {
             continue;
@@ -626,7 +661,7 @@ int main(int argc, char* argv[]) {
     
     // 创建并启动 SSH 服务器
     auto sshServer = std::make_unique<SSHServer>();
-    auto& sshConfig = configManager.getServerConfig().ssh;
+    const auto& sshConfig = runtimeConfig.ssh;
     if (!sshServer->initialize(sshConfig.listenAddress, sshConfig.port, sshConfig.hostKeyPath, eventLoop)) {
         LOG_FATAL("Failed to initialize SSH server");
         removePidFile(pidFile);
@@ -638,7 +673,7 @@ int main(int argc, char* argv[]) {
     sshServer->setClusterManager(clusterManager);
     sshServer->setAssetManager(assetManager);
     sshServer->setNodeRegistry(nodeRegistry);
-    const int rateLimitPerMinute = configManager.getServerConfig().security.maxConnectionsPerMinute;
+    const int rateLimitPerMinute = runtimeConfig.security.maxConnectionsPerMinute;
     sshServer->setConnectionRateLimitPerMinute(rateLimitPerMinute);
     if (rateLimitPerMinute <= 0) {
         LOG_INFO("Connection rate limit disabled");

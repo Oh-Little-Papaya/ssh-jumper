@@ -21,7 +21,8 @@ cd ssh-jumper
 
 无需任何配置文件。你只需要准备：
 - 集群共享 token（`--token`）
-- 登录用户（可选，不传会自动创建 `admin/admin123`）
+- 管理接口 token（`--admin-token`）
+- 登录用户（必填，`--user` 或 `--user-hash`）
 - 权限默认全资产访问（无需额外参数）
 
 ## 3. 启动服务器（1 分钟）
@@ -34,7 +35,8 @@ sudo ssh_jump_server \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
   --token my-secret-token \
-  --user admin:admin123 \
+  --admin-token my-admin-secret \
+  --user admin:Admin123! \
   --default-target-user root
 
 # 或使用守护进程模式
@@ -44,7 +46,8 @@ sudo ssh_jump_server \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
   --token my-secret-token \
-  --user admin:admin123 \
+  --admin-token my-admin-secret \
+  --user admin:Admin123! \
   --default-target-user root \
   -d
 ```

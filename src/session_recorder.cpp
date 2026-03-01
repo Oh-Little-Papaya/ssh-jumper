@@ -6,6 +6,7 @@
 #include "session_recorder.h"
 #include <sys/stat.h>
 #include <iomanip>
+#include <cerrno>
 
 namespace sshjump {
 
@@ -41,17 +42,19 @@ bool SessionRecorder::startRecording(const std::string& sessionPath,
     }
 
     // 创建目录（如果不存在）
-    if (mkdir(dirPath.c_str(), 0755) != 0 && errno != EEXIST) {
+    if (mkdir(dirPath.c_str(), 0700) != 0 && errno != EEXIST) {
         LOG_ERROR("Failed to create directory: " + dirPath + " - " + strerror(errno));
         return false;
     }
+    chmod(dirPath.c_str(), 0700);
 
     // 创建用户子目录
     std::string userDir = dirPath + username_;
-    if (mkdir(userDir.c_str(), 0755) != 0 && errno != EEXIST) {
+    if (mkdir(userDir.c_str(), 0700) != 0 && errno != EEXIST) {
         LOG_ERROR("Failed to create user directory: " + userDir + " - " + strerror(errno));
         return false;
     }
+    chmod(userDir.c_str(), 0700);
 
     // 生成录制文件名: {timestamp}_{assetId}.rec
     auto now = std::chrono::system_clock::now();
@@ -70,6 +73,7 @@ bool SessionRecorder::startRecording(const std::string& sessionPath,
         LOG_ERROR("Failed to open recording file: " + recordFilePath_);
         return false;
     }
+    chmod(recordFilePath_.c_str(), 0600);
 
     // 写入文件头
     writeHeader();
