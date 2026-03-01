@@ -11,18 +11,10 @@
 ## 1. 安装（1 分钟）
 
 ```bash
-# 安装 Folly（含依赖）
+# 一键安装（自动安装 Folly、编译并安装）
 git clone <repository-url>
 cd ssh-jumper
-./scripts/install_folly.sh
-
-# 安装项目额外依赖并编译
-sudo apt-get install -y libssh-dev
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-
-# 安装到系统
-sudo cmake --install build
+./scripts/install_project.sh
 ```
 
 ## 2. 准备启动参数（1 分钟）
@@ -36,7 +28,7 @@ sudo cmake --install build
 
 ```bash
 # 启动
-sudo ./ssh_jump_server \
+sudo ssh_jump_server \
   -p 2222 \
   -a 8888 \
   --listen-address 0.0.0.0 \
@@ -46,7 +38,7 @@ sudo ./ssh_jump_server \
   --default-target-user root
 
 # 或使用守护进程模式
-sudo ./ssh_jump_server \
+sudo ssh_jump_server \
   -p 2222 \
   -a 8888 \
   --listen-address 0.0.0.0 \
@@ -73,7 +65,7 @@ tail -f /var/log/ssh_jump/server.log
 
 ```bash
 # 复制 Agent 二进制
-scp build/ssh_jump_agent user@target-server:/tmp/
+scp /usr/local/bin/ssh_jump_agent user@target-server:/tmp/
 
 # 在目标机器上运行
 ssh user@target-server

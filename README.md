@@ -4,30 +4,23 @@
 
 ## 1) 安装与编译
 
-Folly 默认启用，先一键安装 Folly（含依赖）：
-
-```bash
-./scripts/install_folly.sh
-```
-
-编译项目：
+一键安装整个项目（自动安装 Folly、编译并安装二进制）：
 
 ```bash
 git clone <repository-url>
 cd ssh-jumper
-sudo apt-get install -y libssh-dev
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
+./scripts/install_project.sh
 ```
 
 说明：
 - `ENABLE_FOLLY` 默认就是 `ON`，不需要额外传 `-DENABLE_FOLLY=ON`。
 - 如果 Folly 不可用，配置阶段会直接失败。
+- 安装完成后可直接使用 `/usr/local/bin/ssh_jump_server` 与 `/usr/local/bin/ssh_jump_agent`。
 
 ## 2) 启动 jump-server
 
 ```bash
-./build/ssh_jump_server \
+ssh_jump_server \
   -p 2222 \
   -a 8888 \
   --listen-address 0.0.0.0 \
@@ -45,7 +38,7 @@ cmake --build build -j"$(nproc)"
 ## 3) 启动 jump-agent
 
 ```bash
-./build/ssh_jump_agent \
+ssh_jump_agent \
   -s <jump-server-ip> \
   -p 8888 \
   -i web-server-01 \
