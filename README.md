@@ -8,7 +8,7 @@ SSH Jump Server 是一个轻量级跳板机系统，包含服务端（`ssh_jump_
 - Agent 自动接入：子节点通过共享 token 注册到集群，便于横向扩展。
 - 资产目录与选择：支持交互式菜单和按资产名直连两种访问方式。
 - 会话与操作审计：内置会话记录能力，便于追踪和排查问题。
-- 无配置文件运行：通过命令行参数和运行时管理工具完成配置。
+- 配套管理能力：通过命令行参数和运行时管理工具完成用户与节点维护。
 
 ## 1) 安装与编译
 
@@ -62,10 +62,10 @@ ssh -p 2222 admin@<jump-server-ip>
 ssh -p 2222 admin@<jump-server-ip> web-server-01
 ```
 
-## 5) 无配置文件模式
+## 5) 用户与集群节点管理
 
-不使用任何配置文件时，用户可通过 `ssh_jump_server` 启动参数定义；
-集群节点建议通过运行时工具 `ssh_jump_cluster_node_tool` 进行增删改查。
+用户可通过 `ssh_jump_server` 启动参数定义；
+集群节点可通过运行时工具 `ssh_jump_cluster_node_tool` 进行增删改查。
 
 ### 5.1 在启动参数中定义用户
 
@@ -108,5 +108,5 @@ ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret
 ```
 
 说明：
-- 该工具直接与运行中的 `ssh_jump_server` 通信，不依赖本地配置文件。
+- 该工具直接与运行中的 `ssh_jump_server` 通信。
 - 管理权限使用服务端共享 `--token`。
