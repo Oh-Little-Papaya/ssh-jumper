@@ -64,7 +64,8 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 
 ## 5) 无配置文件模式
 
-不使用任何配置文件时，建议只用 `ssh_jump_server` 启动参数维护运行配置。
+不使用任何配置文件时，用户可通过 `ssh_jump_server` 启动参数定义；
+集群节点建议通过运行时工具 `ssh_jump_cluster_node_tool` 进行增删改查。
 
 ### 5.1 在启动参数中定义用户
 
