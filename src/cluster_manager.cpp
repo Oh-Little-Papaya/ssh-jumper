@@ -4,6 +4,7 @@
  */
 
 #include "cluster_manager.h"
+#include "config_manager.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <arpa/inet.h>
@@ -11,7 +12,10 @@
 #include <poll.h>
 #include <algorithm>
 #include <cctype>
+#include <iomanip>
 #include <nlohmann/json.hpp>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #ifdef SSHJUMP_USE_FOLLY
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -28,6 +32,39 @@ constexpr int kDefaultReverseTunnelPortEnd = 38199;
 constexpr int kDefaultReverseTunnelRetries = 3;
 constexpr int kSendTimeoutMs = 5000;
 constexpr uint32_t kMaxAgentMessageSize = 10 * 1024 * 1024;
+constexpr int kPbkdf2Iterations = 100000;
+constexpr int kPbkdf2SaltLength = 32;
+constexpr int kPbkdf2HashLength = 64;
+
+std::string bytesToHex(const unsigned char* data, size_t len) {
+    std::ostringstream oss;
+    for (size_t i = 0; i < len; ++i) {
+        oss << std::hex << std::setw(2) << std::setfill('0')
+            << static_cast<int>(data[i]);
+    }
+    return oss.str();
+}
+
+std::string hashPasswordPbkdf2(const std::string& password) {
+    std::vector<unsigned char> salt(kPbkdf2SaltLength, 0);
+    if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
+        return "";
+    }
+
+    unsigned char hash[kPbkdf2HashLength] = {0};
+    const int ret = PKCS5_PBKDF2_HMAC(
+        password.c_str(), static_cast<int>(password.size()),
+        salt.data(), static_cast<int>(salt.size()),
+        kPbkdf2Iterations, EVP_sha512(),
+        kPbkdf2HashLength, hash);
+    if (ret != 1) {
+        return "";
+    }
+
+    return "PBKDF2$" + std::to_string(kPbkdf2Iterations) + "$" +
+           bytesToHex(salt.data(), salt.size()) + "$" +
+           bytesToHex(hash, sizeof(hash));
+}
 
 std::string extractJsonStringValue(const std::string& payload, const std::string& key) {
     const std::string searchKey = "\"" + key + "\":\"";
@@ -732,6 +769,19 @@ void AgentConnection::handleCommand(const std::string& payload) {
         return item;
     };
 
+    auto userToJson = [](const UserAuthInfo& user) -> json {
+        json item;
+        item["username"] = user.username;
+        item["enabled"] = user.enabled;
+        item["mustChangePassword"] = user.mustChangePassword;
+        item["hasPublicKey"] = !user.publicKey.empty();
+        item["passwordHashType"] = user.isPbkdf2Hash() ? "PBKDF2" : "SHA256";
+        if (!user.publicKey.empty()) {
+            item["publicKey"] = user.publicKey;
+        }
+        return item;
+    };
+
     if (op == "list_nodes") {
         const auto nodes = manager_->listConfiguredAgents();
         json resp;
@@ -743,86 +793,208 @@ void AgentConnection::handleCommand(const std::string& payload) {
         return;
     }
 
-    const std::string agentId = trimString(req.value("agentId", ""));
-    if (agentId.empty()) {
-        sendResponse(false, "Missing agentId");
+    if (op == "list_users") {
+        auto& config = ConfigManager::getInstance().getServerConfig();
+        std::vector<std::string> usernames;
+        usernames.reserve(config.users.size());
+        for (const auto& pair : config.users) {
+            usernames.push_back(pair.first);
+        }
+        std::sort(usernames.begin(), usernames.end());
+
+        json resp;
+        resp["users"] = json::array();
+        for (const auto& username : usernames) {
+            auto it = config.users.find(username);
+            if (it != config.users.end()) {
+                resp["users"].push_back(userToJson(it->second));
+            }
+        }
+        sendResponse(true, resp.dump());
         return;
     }
 
-    if (op == "get_node") {
-        auto node = manager_->getConfiguredAgent(agentId);
-        if (!node) {
-            sendResponse(false, "Node not found");
+    if (op == "get_user" || op == "create_user" || op == "update_user" || op == "delete_user") {
+        const std::string username = trimString(req.value("username", ""));
+        if (username.empty()) {
+            sendResponse(false, "Missing username");
             return;
         }
-        sendResponse(true, nodeToJson(*node).dump());
+
+        auto& config = ConfigManager::getInstance().getServerConfig();
+        auto it = config.users.find(username);
+
+        if (op == "get_user") {
+            if (it == config.users.end()) {
+                sendResponse(false, "User not found");
+                return;
+            }
+            sendResponse(true, userToJson(it->second).dump());
+            return;
+        }
+
+        if (op == "create_user") {
+            if (it != config.users.end()) {
+                sendResponse(false, "User already exists");
+                return;
+            }
+
+            const std::string password = req.value("password", "");
+            const std::string passwordHash = trimString(req.value("passwordHash", ""));
+            if (password.empty() && passwordHash.empty()) {
+                sendResponse(false, "Missing password or passwordHash");
+                return;
+            }
+
+            UserAuthInfo user;
+            user.username = username;
+            user.passwordHash = passwordHash.empty() ? hashPasswordPbkdf2(password) : passwordHash;
+            user.publicKey = trimString(req.value("publicKey", ""));
+            user.mustChangePassword = req.value("mustChangePassword", false);
+            user.enabled = req.value("enabled", true);
+
+            if (user.passwordHash.empty()) {
+                sendResponse(false, "Failed to hash password");
+                return;
+            }
+
+            config.users[user.username] = user;
+            sendResponse(true, userToJson(user).dump());
+            return;
+        }
+
+        if (op == "update_user") {
+            if (it == config.users.end()) {
+                sendResponse(false, "User not found");
+                return;
+            }
+
+            if (req.contains("password")) {
+                const std::string password = req.value("password", "");
+                if (password.empty()) {
+                    sendResponse(false, "Empty password");
+                    return;
+                }
+                it->second.passwordHash = hashPasswordPbkdf2(password);
+                if (it->second.passwordHash.empty()) {
+                    sendResponse(false, "Failed to hash password");
+                    return;
+                }
+            }
+            if (req.contains("passwordHash")) {
+                const std::string passwordHash = trimString(req.value("passwordHash", ""));
+                if (passwordHash.empty()) {
+                    sendResponse(false, "Empty passwordHash");
+                    return;
+                }
+                it->second.passwordHash = passwordHash;
+            }
+            if (req.contains("publicKey")) {
+                it->second.publicKey = trimString(req.value("publicKey", ""));
+            }
+            if (req.value("clearPublicKey", false)) {
+                it->second.publicKey.clear();
+            }
+            if (req.contains("mustChangePassword")) {
+                it->second.mustChangePassword = req.value("mustChangePassword", false);
+            }
+            if (req.contains("enabled")) {
+                it->second.enabled = req.value("enabled", true);
+            }
+
+            sendResponse(true, userToJson(it->second).dump());
+            return;
+        }
+
+        if (it == config.users.end()) {
+            sendResponse(false, "User not found");
+            return;
+        }
+        config.users.erase(it);
+        sendResponse(true, "Deleted");
         return;
     }
 
-    if (op == "create_node") {
-        if (manager_->getConfiguredAgent(agentId)) {
-            sendResponse(false, "Node already exists");
+    if (op == "get_node" || op == "create_node" || op == "update_node" || op == "delete_node") {
+        const std::string agentId = trimString(req.value("agentId", ""));
+        if (agentId.empty()) {
+            sendResponse(false, "Missing agentId");
             return;
         }
 
-        AgentTokenConfig node;
-        node.agentId = agentId;
-        node.ipAddress = trimString(req.value("ipAddress", ""));
-        node.token = trimString(req.value("nodeToken", ""));
-        node.hostname = trimString(req.value("hostname", ""));
-        if (node.hostname.empty()) {
-            node.hostname = node.agentId;
-        }
-
-        if (!node.isValid()) {
-            sendResponse(false, "Invalid node data");
+        if (op == "get_node") {
+            auto node = manager_->getConfiguredAgent(agentId);
+            if (!node) {
+                sendResponse(false, "Node not found");
+                return;
+            }
+            sendResponse(true, nodeToJson(*node).dump());
             return;
         }
 
-        if (!manager_->upsertConfiguredAgent(node)) {
-            sendResponse(false, "Failed to create node");
+        if (op == "create_node") {
+            if (manager_->getConfiguredAgent(agentId)) {
+                sendResponse(false, "Node already exists");
+                return;
+            }
+
+            AgentTokenConfig node;
+            node.agentId = agentId;
+            node.ipAddress = trimString(req.value("ipAddress", ""));
+            node.token = trimString(req.value("nodeToken", ""));
+            node.hostname = trimString(req.value("hostname", ""));
+            if (node.hostname.empty()) {
+                node.hostname = node.agentId;
+            }
+
+            if (!node.isValid()) {
+                sendResponse(false, "Invalid node data");
+                return;
+            }
+
+            if (!manager_->upsertConfiguredAgent(node)) {
+                sendResponse(false, "Failed to create node");
+                return;
+            }
+
+            sendResponse(true, nodeToJson(node).dump());
             return;
         }
 
-        sendResponse(true, nodeToJson(node).dump());
-        return;
-    }
+        if (op == "update_node") {
+            auto current = manager_->getConfiguredAgent(agentId);
+            if (!current) {
+                sendResponse(false, "Node not found");
+                return;
+            }
 
-    if (op == "update_node") {
-        auto current = manager_->getConfiguredAgent(agentId);
-        if (!current) {
-            sendResponse(false, "Node not found");
+            if (req.contains("ipAddress")) {
+                current->ipAddress = trimString(req.value("ipAddress", ""));
+            }
+            if (req.contains("nodeToken")) {
+                current->token = trimString(req.value("nodeToken", ""));
+            }
+            if (req.contains("hostname")) {
+                current->hostname = trimString(req.value("hostname", ""));
+            }
+            if (current->hostname.empty()) {
+                current->hostname = current->agentId;
+            }
+
+            if (!current->isValid()) {
+                sendResponse(false, "Invalid node data");
+                return;
+            }
+
+            if (!manager_->upsertConfiguredAgent(*current)) {
+                sendResponse(false, "Failed to update node");
+                return;
+            }
+
+            sendResponse(true, nodeToJson(*current).dump());
             return;
         }
 
-        if (req.contains("ipAddress")) {
-            current->ipAddress = trimString(req.value("ipAddress", ""));
-        }
-        if (req.contains("nodeToken")) {
-            current->token = trimString(req.value("nodeToken", ""));
-        }
-        if (req.contains("hostname")) {
-            current->hostname = trimString(req.value("hostname", ""));
-        }
-        if (current->hostname.empty()) {
-            current->hostname = current->agentId;
-        }
-
-        if (!current->isValid()) {
-            sendResponse(false, "Invalid node data");
-            return;
-        }
-
-        if (!manager_->upsertConfiguredAgent(*current)) {
-            sendResponse(false, "Failed to update node");
-            return;
-        }
-
-        sendResponse(true, nodeToJson(*current).dump());
-        return;
-    }
-
-    if (op == "delete_node") {
         if (!manager_->deleteConfiguredAgent(agentId)) {
             sendResponse(false, "Node not found");
             return;

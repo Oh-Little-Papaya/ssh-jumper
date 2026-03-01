@@ -110,7 +110,7 @@ TEST(config_default_values, "配置管理") {
     ASSERT_EQ(7000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
     ASSERT_EQ("info", config.getServerConfig().logging.level);
     ASSERT_TRUE(config.getServerConfig().logging.sessionRecording);
-    ASSERT_EQ(10, config.getServerConfig().security.maxConnectionsPerMinute);
+    ASSERT_EQ(0, config.getServerConfig().security.maxConnectionsPerMinute);
     
     return true;
 }
@@ -322,7 +322,7 @@ TEST(config_security_rate_limit_invalid, "配置管理") {
 
     std::ofstream file(testFile);
     file << "[security]\n";
-    file << "max_connections_per_minute = 0\n";
+    file << "max_connections_per_minute = -1\n";
     file << "users_file = " << userFile << "\n";
     file.close();
 

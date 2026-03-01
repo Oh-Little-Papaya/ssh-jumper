@@ -64,47 +64,48 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 
 ## 5) 用户与集群节点管理
 
-用户可通过 `ssh_jump_server` 启动参数定义；
-集群节点可通过运行时工具 `ssh_jump_cluster_node_tool` 进行增删改查。
+运行时工具 `ssh_jump_cluster_admin_tool` 可直接管理用户账户和集群节点（CRUD）。
 
-### 5.1 在启动参数中定义用户
+### 5.1 使用运行时工具管理用户账户（CRUD）
 
 ```bash
-# 方式1：明文密码（启动时自动计算哈希）
-ssh_jump_server \
-  -p 2222 \
-  -a 8888 \
-  --token cluster-secret-token \
-  --user admin:Admin123 \
-  --user ops:Ops123456
+# 列表
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --list-users
 
-# 方式2：直接传入密码哈希
-ssh_jump_server \
-  -p 2222 \
-  -a 8888 \
-  --token cluster-secret-token \
-  --user-hash admin:PBKDF2\$100000\$<salt_hex>\$<hash_hex>
+# 新增（明文密码由服务端加密保存）
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+  --add-user ops --password 'OpsPass123' --must-change
+
+# 查询
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --get-user ops
+
+# 更新（改密/启用禁用/公钥）
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+  --update-user ops --password 'NewPass456' --enabled
+
+# 删除
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --delete-user ops
 ```
 
 ### 5.2 使用运行时工具管理集群节点（CRUD）
 
 ```bash
 # 列表
-ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --list-nodes
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --list-nodes
 
 # 新增
-ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
   --add-node web-01 --ip 10.0.0.21 --node-token web-01-token --hostname web-server-01
 
 # 查询
-ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --get-node web-01
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --get-node web-01
 
 # 更新
-ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
   --update-node web-01 --ip 10.0.0.22 --hostname web-server-01-new
 
 # 删除
-ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --delete-node web-01
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --delete-node web-01
 ```
 
 说明：
