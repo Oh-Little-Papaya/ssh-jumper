@@ -137,7 +137,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/ssh_jump/ssh_jump_agent -s jump.example.com -p 8888 -i %i -t REPLACE_WITH_TOKEN -n %i -S ssh:ssh:22
+ExecStart=/opt/ssh_jump/ssh_jump_agent -s jump.example.com -p 8888 -i %i -t REPLACE_WITH_TOKEN -n %i
 Restart=on-failure
 RestartSec=10s
 
@@ -207,7 +207,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/opt/ssh_jump/ssh_jump_agent -s ${SERVER_ADDR} -p ${SERVER_PORT} -i ${AGENT_ID} -t ${TOKEN} -n $(hostname -f) -S ssh:ssh:22
+ExecStart=/opt/ssh_jump/ssh_jump_agent -s ${SERVER_ADDR} -p ${SERVER_PORT} -i ${AGENT_ID} -t ${TOKEN} -n $(hostname -f)
 Restart=on-failure
 RestartSec=10s
 

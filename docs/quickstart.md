@@ -77,8 +77,7 @@ sudo ssh_jump_agent \
     -s <jump-server-ip> \
     -p 8888 \
     -i my-server \
-    -t my-secret-token \
-    -S "ssh:ssh:22"
+    -t my-secret-token
 ```
 
 ## 5. 测试连接（1 分钟）

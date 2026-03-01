@@ -58,22 +58,13 @@ Agent                              Server
   "hostname": "Web Server 01",
   "ip_address": "10.0.1.5",
   "version": "2.0.0",
-  "auth_token": "secret-token",
-  "services": [
-    {
-      "name": "SSH",
-      "type": "ssh",
-      "port": 22,
-      "description": "SSH Service"
-    },
-    {
-      "name": "Web",
-      "type": "http",
-      "port": 80
-    }
-  ]
+  "auth_token": "secret-token"
 }
 ```
+
+说明：
+- `jump-agent` 只负责资产注册与心跳，不需要通过命令行声明可暴露服务。
+- 服务端按跳板场景默认连接目标 SSH 端口 `22`。
 
 ### 注册响应
 
@@ -179,8 +170,7 @@ sock.connect(('jump.example.com', 8888))
 payload = json.dumps({
     'agent_id': 'web-server-01',
     'hostname': 'Web Server 01',
-    'auth_token': 'secret-token',
-    'services': [{'name': 'SSH', 'type': 'ssh', 'port': 22}]
+    'auth_token': 'secret-token'
 }).encode()
 
 # 构建消息头部

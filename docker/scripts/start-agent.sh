@@ -7,7 +7,6 @@ AGENT_TOKEN="${AGENT_TOKEN:-default-token}"
 SERVER_HOST="${SERVER_HOST:-jump-server}"
 SERVER_PORT="${SERVER_PORT:-8888}"
 AGENT_HOSTNAME="${AGENT_HOSTNAME:-$AGENT_ID}"
-SSH_PORT="${SSH_PORT:-22}"
 AGENT_IP="${AGENT_IP:-}"
 
 echo "========================================"
@@ -16,7 +15,6 @@ echo "========================================"
 echo "[INFO] Agent ID: $AGENT_ID"
 echo "[INFO] Hostname: $AGENT_HOSTNAME"
 echo "[INFO] Server: $SERVER_HOST:$SERVER_PORT"
-echo "[INFO] SSH Port: $SSH_PORT"
 echo "========================================"
 
 # 启动本地的 SSH 服务（模拟目标服务器）
@@ -28,7 +26,7 @@ sleep 1
 
 # 检查 SSH 服务
 if pgrep -x "sshd" > /dev/null; then
-    echo "[INFO] SSH 服务已启动 (端口 $SSH_PORT)"
+    echo "[INFO] SSH 服务已启动"
 else
     echo "[ERROR] SSH 服务启动失败"
     exit 1
@@ -59,7 +57,6 @@ AGENT_CMD=(
     -i "$AGENT_ID"
     -t "$AGENT_TOKEN"
     -n "$AGENT_HOSTNAME"
-    -S "ssh:ssh:$SSH_PORT"
     -v
 )
 

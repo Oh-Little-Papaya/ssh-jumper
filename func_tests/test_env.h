@@ -182,8 +182,8 @@ public:
         return serverProcess_.isRunning();
     }
     
-    bool startAgent(const std::string& agentId, const std::string& token, 
-                    const std::string& hostname, const std::string& services = "") {
+    bool startAgent(const std::string& agentId, const std::string& token,
+                    const std::string& hostname) {
         std::vector<std::string> args = {
             "-s", "127.0.0.1",
             "-p", std::to_string(config_.clusterPort),
@@ -191,10 +191,6 @@ public:
             "-t", token,
             "-n", hostname
         };
-        if (!services.empty()) {
-            args.push_back("-S");
-            args.push_back(services);
-        }
         return agentProcess_.start(config_.agentBinary, args);
     }
     
@@ -265,19 +261,19 @@ private:
         file << "token = web01-secret-token\n";
         file << "ip = 10.10.0.11\n";
         file << "hostname = web-server-01\n";
-        file << "service = ssh:ssh:22\n\n";
+        file << "\n";
 
         file << "[agent:web-02]\n";
         file << "token = web02-secret-token\n";
         file << "ip = 10.10.0.12\n";
         file << "hostname = web-server-02\n";
-        file << "service = ssh:ssh:22\n\n";
+        file << "\n";
 
         file << "[agent:db-01]\n";
         file << "token = db01-secret-token\n";
         file << "ip = 10.10.0.13\n";
         file << "hostname = db-server-01\n";
-        file << "service = ssh:ssh:22\n";
+        file << "\n";
         file.close();
     }
     

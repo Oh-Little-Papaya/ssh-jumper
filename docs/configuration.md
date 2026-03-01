@@ -64,8 +64,7 @@
   -p 8888 \
   -i web-server-01 \
   -t cluster-secret-token \
-  -n web-server-01 \
-  -S ssh:ssh:22
+  -n web-server-01
 ```
 
 常用参数：
@@ -75,7 +74,6 @@
 - `-t, --token` Agent token（必填）
 - `-n, --hostname` 展示主机名
 - `-I, --ip` 上报 IP（可选）
-- `-S, --service` 暴露服务，格式 `name:type:port`，可重复
 - `-d, --daemon` 守护进程模式
 - `-v, --verbose` 调试日志
 

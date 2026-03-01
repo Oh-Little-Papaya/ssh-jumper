@@ -47,7 +47,7 @@ FUNC_TEST_WITH_TIMEOUT(agent_registration, "Agent功能", 15) {
     std::this_thread::sleep_for(std::chrono::seconds(1));
     
     // 启动 Agent
-    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", "web01-secret-token", "web-server-01", "ssh:ssh:22"));
+    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", "web01-secret-token", "web-server-01"));
     FUNC_ASSERT_TRUE(g_testEnv.isAgentRunning());
     
     // 等待注册完成

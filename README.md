@@ -39,8 +39,7 @@ ssh_jump_agent \
   -p 8888 \
   -i web-server-01 \
   -t cluster-secret-token \
-  -n web-server-01 \
-  -S ssh:ssh:22
+  -n web-server-01
 ```
 
 ## 4) SSH 登录

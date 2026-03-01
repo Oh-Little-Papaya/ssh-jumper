@@ -31,14 +31,13 @@ void printUsage(const char* program) {
               << "  -t, --token <token>     Authentication token (required)\n"
               << "  -n, --hostname <name>   Hostname to register\n"
               << "  -I, --ip <ip>           Local IP address to report (auto-detect if not set)\n"
-              << "  -S, --service <spec>    Service to expose (format: name:type:port)\n"
               << "  -d, --daemon            Run as daemon\n"
               << "  -v, --verbose           Verbose output\n"
               << "  -h, --help              Show this help message\n"
               << "  -V, --version           Show version information\n"
               << "\nExamples:\n"
-              << "  " << program << " -s jump.example.com -t mysecrettoken -S ssh:ssh:22\n"
-              << "  " << program << " -s 192.168.1.100 -p 8888 -i web-01 -t token -I 192.168.1.10 -S web:http:80\n"
+              << "  " << program << " -s jump.example.com -t mysecrettoken\n"
+              << "  " << program << " -s 192.168.1.100 -p 8888 -i web-01 -t token -I 192.168.1.10\n"
               << "  " << program << " -s jump.example.com -t token -d\n";
 }
 
@@ -97,25 +96,6 @@ bool daemonize() {
     return true;
 }
 
-// 解析服务规格
-bool parseServiceSpec(const std::string& spec, ServiceInfo& service) {
-    auto parts = splitString(spec, ':');
-    if (parts.size() < 3) {
-        return false;
-    }
-
-    service.name = parts[0];
-    service.type = parts[1];
-    service.port = safeStringToInt(parts[2], 22);
-
-    // 可选的描述字段
-    if (parts.size() > 3) {
-        service.description = parts[3];
-    }
-
-    return true;
-}
-
 int main(int argc, char* argv[]) {
     // 配置参数
     std::string serverAddr;
@@ -124,7 +104,6 @@ int main(int argc, char* argv[]) {
     std::string authToken;
     std::string hostname;
     std::string localIp;
-    std::vector<ServiceInfo> services;
     bool runAsDaemon = false;
     bool verbose = false;
     
@@ -136,7 +115,6 @@ int main(int argc, char* argv[]) {
         {"token", required_argument, nullptr, 't'},
         {"hostname", required_argument, nullptr, 'n'},
         {"ip", required_argument, nullptr, 'I'},
-        {"service", required_argument, nullptr, 'S'},
         {"daemon", no_argument, nullptr, 'd'},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
@@ -145,7 +123,7 @@ int main(int argc, char* argv[]) {
     };
     
     int opt;
-    while ((opt = getopt_long(argc, argv, "s:p:i:t:n:I:S:dvhV", longOptions, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "s:p:i:t:n:I:dvhV", longOptions, nullptr)) != -1) {
         switch (opt) {
             case 's':
                 serverAddr = optarg;
@@ -169,16 +147,6 @@ int main(int argc, char* argv[]) {
             case 'I':
                 localIp = optarg;
                 break;
-            case 'S': {
-                ServiceInfo service;
-                if (parseServiceSpec(optarg, service)) {
-                    services.push_back(service);
-                } else {
-                    std::cerr << "Invalid service spec: " << optarg << std::endl;
-                    return 1;
-                }
-                break;
-            }
             case 'd':
                 runAsDaemon = true;
                 break;
@@ -219,16 +187,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // 如果没有指定服务，添加默认SSH服务
-    if (services.empty()) {
-        ServiceInfo sshService;
-        sshService.name = "ssh";
-        sshService.type = "ssh";
-        sshService.port = 22;
-        services.push_back(sshService);
-        LOG_INFO("No services specified, using default SSH service on port 22");
-    }
-    
     // 如果没有指定主机名，使用Agent ID
     if (hostname.empty()) {
         hostname = "agent-" + agentId;
@@ -240,10 +198,6 @@ int main(int argc, char* argv[]) {
     LOG_INFO("  Agent ID: " + agentId);
     LOG_INFO("  Hostname: " + hostname);
     LOG_INFO("  Local IP: " + (localIp.empty() ? std::string("(auto-detect)") : localIp));
-    LOG_INFO("  Services:");
-    for (const auto& service : services) {
-        LOG_INFO("    - " + service.name + " (" + service.type + "):" + std::to_string(service.port));
-    }
     
     // 守护进程化
     if (runAsDaemon) {
@@ -267,11 +221,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    agent.setServices(services);
-    
     // 注册到集群
     LOG_INFO("Registering to cluster...");
-    if (!agent.registerToCluster(services)) {
+    if (!agent.registerToCluster({})) {
         LOG_FATAL("Failed to register to cluster");
         return 1;
     }
@@ -298,7 +250,7 @@ int main(int argc, char* argv[]) {
                 LOG_WARN("Connection lost, attempting to reconnect...");
                 
                 // 尝试重新注册
-                if (!agent.registerToCluster(services)) {
+                if (!agent.registerToCluster({})) {
                     LOG_ERROR("Reconnection failed, will retry...");
                 }
             }

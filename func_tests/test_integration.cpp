@@ -30,7 +30,7 @@ FUNC_TEST_WITH_TIMEOUT(complete_workflow, "集成测试", 30) {
     
     // 2. 启动 Agent
     std::cout << "\n    [2/5] 启动 Agent... " << std::flush;
-    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", "web01-secret-token", "web-server-01", "ssh:ssh:22"));
+    FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", "web01-secret-token", "web-server-01"));
     std::this_thread::sleep_for(std::chrono::seconds(2));
     FUNC_ASSERT_TRUE(g_testEnv.isAgentRunning());
     std::cout << "OK (PID: " << g_testEnv.getAgentPid() << ")" << std::flush;
