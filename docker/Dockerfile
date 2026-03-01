@@ -137,10 +137,13 @@ RUN groupadd -r sshjump && \
 # 复制二进制文件
 COPY --from=builder /build/build/ssh_jump_server /opt/ssh_jump/
 COPY --from=builder /build/build/ssh_jump_node_tool /opt/ssh_jump/
+COPY --from=builder /build/build/ssh_jump_cluster_node_tool /opt/ssh_jump/
 RUN chmod +x /opt/ssh_jump/ssh_jump_server && \
     chmod +x /opt/ssh_jump/ssh_jump_node_tool && \
+    chmod +x /opt/ssh_jump/ssh_jump_cluster_node_tool && \
     ln -sf /opt/ssh_jump/ssh_jump_server /usr/local/bin/ && \
-    ln -sf /opt/ssh_jump/ssh_jump_node_tool /usr/local/bin/
+    ln -sf /opt/ssh_jump/ssh_jump_node_tool /usr/local/bin/ && \
+    ln -sf /opt/ssh_jump/ssh_jump_cluster_node_tool /usr/local/bin/
 
 # 复制默认配置
 COPY docker/server-config/ /etc/ssh_jump/

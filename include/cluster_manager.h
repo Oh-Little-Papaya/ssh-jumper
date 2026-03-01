@@ -155,6 +155,9 @@ private:
     
     // 处理注销
     void handleUnregister(const std::string& payload);
+
+    // 处理管理命令（节点 CRUD）
+    void handleCommand(const std::string& payload);
     
     // 发送响应
     void sendResponse(bool success, const std::string& message);
@@ -234,6 +237,15 @@ public:
     
     // 验证Agent token
     bool verifyAgentToken(const std::string& agentId, const std::string& token);
+
+    // 验证管理命令 token（与共享集群 token 一致）
+    bool validateAdminToken(const std::string& token) const;
+
+    // 获取/维护集群节点配置（内存态）
+    std::vector<AgentTokenConfig> listConfiguredAgents() const;
+    std::optional<AgentTokenConfig> getConfiguredAgent(const std::string& agentId) const;
+    bool upsertConfiguredAgent(const AgentTokenConfig& config);
+    bool deleteConfiguredAgent(const std::string& agentId);
     
     // 建立到Agent的转发连接
     int establishForwardConnection(const std::string& agentId, int targetPort);

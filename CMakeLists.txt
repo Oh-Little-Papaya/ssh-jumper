@@ -211,6 +211,15 @@ target_link_libraries(ssh_jump_node_tool
     Threads::Threads
 )
 
+# 集群节点管理工具（运行时 CRUD）
+add_executable(ssh_jump_cluster_node_tool src/cluster_node_tool.cpp)
+target_link_libraries(ssh_jump_cluster_node_tool
+    sshjump_static
+    ${LIBSSH_LIBRARIES}
+    ${OPENSSL_LIBRARIES}
+    Threads::Threads
+)
+
 # 单元测试
 enable_testing()
 
@@ -282,7 +291,7 @@ set_target_properties(ssh_jump_func_tests PROPERTIES
 
 # 安装目标
 install(TARGETS ssh_jump_server ssh_jump_agent ssh_jump_user_tool
-        ssh_jump_node_tool
+        ssh_jump_node_tool ssh_jump_cluster_node_tool
     RUNTIME DESTINATION bin
 )
 

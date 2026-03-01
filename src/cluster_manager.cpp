@@ -9,7 +9,9 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <poll.h>
+#include <algorithm>
 #include <cctype>
+#include <nlohmann/json.hpp>
 
 #ifdef SSHJUMP_USE_FOLLY
 #include <folly/executors/CPUThreadPoolExecutor.h>
@@ -569,6 +571,9 @@ void AgentConnection::handleMessage(const AgentMessage& msg) {
         case AgentMessageType::UNREGISTER:
             handleUnregister(msg.payload);
             break;
+        case AgentMessageType::COMMAND:
+            handleCommand(msg.payload);
+            break;
         default:
             LOG_WARN("Unknown message type: " + std::to_string(static_cast<int>(msg.type)));
             break;
@@ -683,6 +688,150 @@ void AgentConnection::handleUnregister(const std::string& /*payload*/) {
         manager_->unregisterAgent(agentId_);
     }
     sendResponse(true, "Unregistered successfully");
+}
+
+void AgentConnection::handleCommand(const std::string& payload) {
+    using json = nlohmann::json;
+
+    json req;
+    try {
+        req = json::parse(payload);
+    } catch (const std::exception&) {
+        sendResponse(false, "Invalid command payload");
+        return;
+    }
+
+    const std::string token = trimString(req.value("token", ""));
+    if (!manager_ || !manager_->validateAdminToken(token)) {
+        sendResponse(false, "Unauthorized");
+        return;
+    }
+
+    const std::string op = trimString(req.value("op", ""));
+    if (op.empty()) {
+        sendResponse(false, "Missing op");
+        return;
+    }
+
+    auto nodeToJson = [this](const AgentTokenConfig& cfg) -> json {
+        json item;
+        item["agentId"] = cfg.agentId;
+        item["ipAddress"] = cfg.ipAddress;
+        item["hostname"] = cfg.hostname;
+        item["token"] = cfg.token;
+        item["online"] = false;
+
+        if (manager_) {
+            auto agent = manager_->getAgent(cfg.agentId);
+            if (agent) {
+                item["online"] = agent->isOnline;
+                item["runtimeIpAddress"] = agent->ipAddress;
+                item["runtimeHostname"] = agent->hostname;
+            }
+        }
+        return item;
+    };
+
+    if (op == "list_nodes") {
+        const auto nodes = manager_->listConfiguredAgents();
+        json resp;
+        resp["nodes"] = json::array();
+        for (const auto& node : nodes) {
+            resp["nodes"].push_back(nodeToJson(node));
+        }
+        sendResponse(true, resp.dump());
+        return;
+    }
+
+    const std::string agentId = trimString(req.value("agentId", ""));
+    if (agentId.empty()) {
+        sendResponse(false, "Missing agentId");
+        return;
+    }
+
+    if (op == "get_node") {
+        auto node = manager_->getConfiguredAgent(agentId);
+        if (!node) {
+            sendResponse(false, "Node not found");
+            return;
+        }
+        sendResponse(true, nodeToJson(*node).dump());
+        return;
+    }
+
+    if (op == "create_node") {
+        if (manager_->getConfiguredAgent(agentId)) {
+            sendResponse(false, "Node already exists");
+            return;
+        }
+
+        AgentTokenConfig node;
+        node.agentId = agentId;
+        node.ipAddress = trimString(req.value("ipAddress", ""));
+        node.token = trimString(req.value("nodeToken", ""));
+        node.hostname = trimString(req.value("hostname", ""));
+        if (node.hostname.empty()) {
+            node.hostname = node.agentId;
+        }
+
+        if (!node.isValid()) {
+            sendResponse(false, "Invalid node data");
+            return;
+        }
+
+        if (!manager_->upsertConfiguredAgent(node)) {
+            sendResponse(false, "Failed to create node");
+            return;
+        }
+
+        sendResponse(true, nodeToJson(node).dump());
+        return;
+    }
+
+    if (op == "update_node") {
+        auto current = manager_->getConfiguredAgent(agentId);
+        if (!current) {
+            sendResponse(false, "Node not found");
+            return;
+        }
+
+        if (req.contains("ipAddress")) {
+            current->ipAddress = trimString(req.value("ipAddress", ""));
+        }
+        if (req.contains("nodeToken")) {
+            current->token = trimString(req.value("nodeToken", ""));
+        }
+        if (req.contains("hostname")) {
+            current->hostname = trimString(req.value("hostname", ""));
+        }
+        if (current->hostname.empty()) {
+            current->hostname = current->agentId;
+        }
+
+        if (!current->isValid()) {
+            sendResponse(false, "Invalid node data");
+            return;
+        }
+
+        if (!manager_->upsertConfiguredAgent(*current)) {
+            sendResponse(false, "Failed to update node");
+            return;
+        }
+
+        sendResponse(true, nodeToJson(*current).dump());
+        return;
+    }
+
+    if (op == "delete_node") {
+        if (!manager_->deleteConfiguredAgent(agentId)) {
+            sendResponse(false, "Node not found");
+            return;
+        }
+        sendResponse(true, "Deleted");
+        return;
+    }
+
+    sendResponse(false, "Unsupported op");
 }
 
 void AgentConnection::sendResponse(bool success, const std::string& message) {
@@ -1088,6 +1237,90 @@ bool ClusterManager::verifyAgentToken(const std::string& agentId, const std::str
     }
     
     return false;
+}
+
+bool ClusterManager::validateAdminToken(const std::string& token) const {
+    if (token.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !sharedToken_.empty() && sharedToken_ == token;
+}
+
+std::vector<AgentTokenConfig> ClusterManager::listConfiguredAgents() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::vector<AgentTokenConfig> nodes;
+    nodes.reserve(agentConfigs_.size());
+    for (const auto& pair : agentConfigs_) {
+        nodes.push_back(pair.second);
+    }
+    std::sort(nodes.begin(), nodes.end(), [](const AgentTokenConfig& a, const AgentTokenConfig& b) {
+        return a.agentId < b.agentId;
+    });
+    return nodes;
+}
+
+std::optional<AgentTokenConfig> ClusterManager::getConfiguredAgent(const std::string& agentId) const {
+    if (agentId.empty()) {
+        return std::nullopt;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = agentConfigs_.find(agentId);
+    if (it == agentConfigs_.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+bool ClusterManager::upsertConfiguredAgent(const AgentTokenConfig& config) {
+    if (!config.isValid()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    agentConfigs_[config.agentId] = config;
+    return true;
+}
+
+bool ClusterManager::deleteConfiguredAgent(const std::string& agentId) {
+    if (agentId.empty()) {
+        return false;
+    }
+
+    std::shared_ptr<AgentConnection> connToClose;
+    bool removed = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        removed = (agentConfigs_.erase(agentId) > 0) || removed;
+        removed = (agentTokens_.erase(agentId) > 0) || removed;
+
+        auto connIt = agentConnections_.find(agentId);
+        if (connIt != agentConnections_.end()) {
+            connToClose = connIt->second;
+            agentConnections_.erase(connIt);
+            removed = true;
+        }
+
+        auto agentIt = agents_.find(agentId);
+        if (agentIt != agents_.end()) {
+            if (agentIt->second) {
+                hostnameToAgentId_.erase(agentIt->second->hostname);
+                if (agentIt->second->controlFd >= 0) {
+                    pendingConnections_.erase(agentIt->second->controlFd);
+                }
+            }
+            agents_.erase(agentIt);
+            removed = true;
+        }
+    }
+
+    if (connToClose) {
+        connToClose->close();
+    }
+
+    return removed;
 }
 
 int ClusterManager::establishForwardConnection(const std::string& agentId, int targetPort) {

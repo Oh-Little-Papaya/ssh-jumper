@@ -8,7 +8,7 @@ SSH Jump Server 是一个轻量级跳板机系统，包含服务端（`ssh_jump_
 - Agent 自动接入：子节点通过共享 token 注册到集群，便于横向扩展。
 - 资产目录与选择：支持交互式菜单和按资产名直连两种访问方式。
 - 会话与操作审计：内置会话记录能力，便于追踪和排查问题。
-- 无配置文件运行：通过命令行参数完成用户、节点和集群参数配置。
+- 无配置文件运行：通过命令行参数和运行时管理工具完成配置。
 
 ## 1) 安装与编译
 
@@ -85,15 +85,27 @@ ssh_jump_server \
   --user-hash admin:PBKDF2\$100000\$<salt_hex>\$<hash_hex>
 ```
 
-### 5.2 在启动参数中定义子节点
+### 5.2 使用运行时工具管理集群节点（CRUD）
 
 ```bash
-# --child-node 格式: id:addr[:ssh_port[:cluster_port[:name]]]
-ssh_jump_server \
-  -p 2222 \
-  -a 8888 \
-  --token cluster-secret-token \
-  --user admin:Admin123 \
-  --child-node web-01:10.0.0.21:2222:8888:web-server-01 \
-  --child-node db-01:10.0.0.31:2222:8888:db-server-01
+# 列表
+ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --list-nodes
+
+# 新增
+ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+  --add-node web-01 --ip 10.0.0.21 --node-token web-01-token --hostname web-server-01
+
+# 查询
+ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --get-node web-01
+
+# 更新
+ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token \
+  --update-node web-01 --ip 10.0.0.22 --hostname web-server-01-new
+
+# 删除
+ssh_jump_cluster_node_tool --server 127.0.0.1 --port 8888 --token cluster-secret-token --delete-node web-01
 ```
+
+说明：
+- 该工具直接与运行中的 `ssh_jump_server` 通信，不依赖本地配置文件。
+- 管理权限使用服务端共享 `--token`。
