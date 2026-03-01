@@ -61,3 +61,55 @@ ssh -p 2222 admin@<jump-server-ip>
 # 直接指定资产
 ssh -p 2222 admin@<jump-server-ip> web-server-01
 ```
+
+## 5) 配套管理工具
+
+项目提供两个命令行管理工具：
+- `ssh_jump_user_tool`：用户管理（默认文件 `/etc/ssh_jump/users.conf`）
+- `ssh_jump_node_tool`：子节点管理（默认文件 `/etc/ssh_jump/child_nodes.conf`）
+
+### 5.1 用户管理工具
+
+```bash
+# 查看用户
+ssh_jump_user_tool --list-users
+
+# 创建用户
+ssh_jump_user_tool --create-user ops --password 'StrongPass123'
+
+# 创建首次登录必须改密的用户
+ssh_jump_user_tool --create-user temp --password 'TempPass123' --must-change
+
+# 禁用/启用用户
+ssh_jump_user_tool --disable-user temp
+ssh_jump_user_tool --enable-user temp
+
+# 删除用户
+ssh_jump_user_tool --delete-user temp
+```
+
+### 5.2 节点管理工具
+
+```bash
+# 查看所有节点
+ssh_jump_node_tool --list-nodes
+
+# 新增节点
+ssh_jump_node_tool \
+  --add-node web-01 \
+  --name web-server-01 \
+  --public-address 10.0.0.21 \
+  --ssh-port 2222 \
+  --cluster-port 8888 \
+  --description "production web node" \
+  --enabled
+
+# 查看单个节点
+ssh_jump_node_tool --get-node web-01
+
+# 更新节点信息
+ssh_jump_node_tool --update-node web-01 --public-address 10.0.0.22 --meta env=prod
+
+# 删除节点
+ssh_jump_node_tool --delete-node web-01
+```
