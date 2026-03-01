@@ -39,7 +39,7 @@
 - `--reverse-tunnel-port-end` NAT 回拨端口池结束值，默认 `38199`
 - `--reverse-tunnel-retries` NAT 回拨重试次数，默认 `3`
 - `--reverse-tunnel-accept-timeout-ms` NAT 回拨超时（毫秒），默认 `7000`
-- `--max-connections-per-minute` 每 IP 每分钟连接上限，默认 `10`
+- `--max-connections-per-minute` 每 IP 每分钟连接上限，默认 `0`（不限流）
 - `-d, --daemon` 守护进程模式
 - `-v, --verbose` 调试日志
 

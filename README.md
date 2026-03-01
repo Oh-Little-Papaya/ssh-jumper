@@ -32,14 +32,14 @@ ssh_jump_server \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
   --token cluster-secret-token \
-  --default-target-user root \
-  --max-connections-per-minute 10
+  --default-target-user root
 ```
 
 说明：
 - 只需要一个共享 `--token`，所有 agent 用同一 token 加入集群。
 - 不传 `--user` 时自动创建 `admin/admin123`。
 - 权限参数已移除，所有已配置用户默认可访问全部资产。
+- 默认不限制连接并发；如需限流可设置 `--max-connections-per-minute <n>`。
 
 ## 3) 启动 jump-agent
 

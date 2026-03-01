@@ -22,16 +22,21 @@ namespace sshjump {
 // ============================================
 
 ConnectionRateLimiter::ConnectionRateLimiter(int maxConnectionsPerMinute)
-    : maxConnectionsPerMinute_(std::max(1, maxConnectionsPerMinute)) {
+    : maxConnectionsPerMinute_(std::max(0, maxConnectionsPerMinute)) {
 }
 
 void ConnectionRateLimiter::setMaxConnectionsPerMinute(int maxConnectionsPerMinute) {
     std::lock_guard<std::mutex> lock(mutex_);
-    maxConnectionsPerMinute_ = std::max(1, maxConnectionsPerMinute);
+    maxConnectionsPerMinute_ = std::max(0, maxConnectionsPerMinute);
 }
 
 bool ConnectionRateLimiter::checkAndRecord(const std::string& clientIp) {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // <=0 表示关闭限流
+    if (maxConnectionsPerMinute_ <= 0) {
+        return true;
+    }
 
     auto now = std::chrono::steady_clock::now();
     auto& times = connections_[clientIp];

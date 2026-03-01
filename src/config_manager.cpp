@@ -109,7 +109,7 @@ void ConfigManager::parseLine(const std::string& line, std::string& currentSecti
         if (key == "command_audit") serverConfig_.security.commandAudit = (value == "true");
         else if (key == "allow_port_forwarding") serverConfig_.security.allowPortForwarding = (value == "true");
         else if (key == "allow_sftp") serverConfig_.security.allowSftp = (value == "true");
-        else if (key == "max_connections_per_minute") serverConfig_.security.maxConnectionsPerMinute = safeStringToInt(value, 10);
+        else if (key == "max_connections_per_minute") serverConfig_.security.maxConnectionsPerMinute = safeStringToInt(value, 0);
         else if (key == "users_file") serverConfig_.security.usersFile = value;
         else if (key == "default_target_user") serverConfig_.security.defaultTargetUser = value;
         else if (key == "default_target_password") serverConfig_.security.defaultTargetPassword = value;
@@ -435,7 +435,7 @@ bool ConfigManager::validate() {
         return false;
     }
 
-    if (serverConfig_.security.maxConnectionsPerMinute <= 0 ||
+    if (serverConfig_.security.maxConnectionsPerMinute < 0 ||
         serverConfig_.security.maxConnectionsPerMinute > 100000) {
         LOG_ERROR("Invalid max connections per minute");
         return false;
@@ -467,7 +467,11 @@ void ConfigManager::printConfig() {
     LOG_INFO("  Reverse Tunnel Retries: " + std::to_string(serverConfig_.cluster.reverseTunnelRetries));
     LOG_INFO("  Reverse Tunnel Accept Timeout(ms): " + std::to_string(serverConfig_.cluster.reverseTunnelAcceptTimeoutMs));
     LOG_INFO("Security:");
-    LOG_INFO("  Max Connections Per Minute: " + std::to_string(serverConfig_.security.maxConnectionsPerMinute));
+    if (serverConfig_.security.maxConnectionsPerMinute <= 0) {
+        LOG_INFO("  Max Connections Per Minute: unlimited");
+    } else {
+        LOG_INFO("  Max Connections Per Minute: " + std::to_string(serverConfig_.security.maxConnectionsPerMinute));
+    }
     LOG_INFO("Management:");
     LOG_INFO("  Child Nodes File: " + serverConfig_.management.childNodesFile);
     LOG_INFO("Users: " + std::to_string(serverConfig_.users.size()));

@@ -58,7 +58,7 @@ void printUsage(const char* program) {
               << "      --reverse-tunnel-port-end <port>   Reverse tunnel port pool end (default: 38199)\n"
               << "      --reverse-tunnel-retries <n>       Reverse tunnel retries (default: 3)\n"
               << "      --reverse-tunnel-accept-timeout-ms <ms> Reverse tunnel accept timeout (default: 7000)\n"
-              << "      --max-connections-per-minute <n>   SSH connection rate limit (default: 10)\n"
+              << "      --max-connections-per-minute <n>   SSH connection rate limit (default: 0, unlimited)\n"
               << "  -d, --daemon            Run as daemon\n"
               << "  -v, --verbose           Verbose output\n"
               << "  -h, --help              Show this help message\n"
@@ -267,7 +267,7 @@ int main(int argc, char* argv[]) {
     int reverseTunnelPortEnd = 38199;
     int reverseTunnelRetries = 3;
     int reverseTunnelAcceptTimeoutMs = 7000;
-    int maxConnectionsPerMinute = 10;
+    int maxConnectionsPerMinute = 0;
     bool runAsDaemon = false;
     bool verbose = false;
 
@@ -396,7 +396,7 @@ int main(int argc, char* argv[]) {
                 reverseTunnelAcceptTimeoutMs = safeStringToInt(optarg, 7000);
                 break;
             case OPT_MAX_CONNECTIONS_PER_MINUTE:
-                maxConnectionsPerMinute = safeStringToInt(optarg, 10);
+                maxConnectionsPerMinute = safeStringToInt(optarg, 0);
                 break;
             case 'd':
                 runAsDaemon = true;
@@ -431,7 +431,7 @@ int main(int argc, char* argv[]) {
         std::cerr << "Invalid reverse tunnel accept timeout: " << reverseTunnelAcceptTimeoutMs << std::endl;
         return 1;
     }
-    if (maxConnectionsPerMinute <= 0 || maxConnectionsPerMinute > 100000) {
+    if (maxConnectionsPerMinute < 0 || maxConnectionsPerMinute > 100000) {
         std::cerr << "Invalid max connections per minute: " << maxConnectionsPerMinute << std::endl;
         return 1;
     }
@@ -638,11 +638,15 @@ int main(int argc, char* argv[]) {
     sshServer->setClusterManager(clusterManager);
     sshServer->setAssetManager(assetManager);
     sshServer->setNodeRegistry(nodeRegistry);
-    sshServer->setConnectionRateLimitPerMinute(
-        configManager.getServerConfig().security.maxConnectionsPerMinute);
-    LOG_INFO("Connection rate limit set to " +
-             std::to_string(configManager.getServerConfig().security.maxConnectionsPerMinute) +
-             " per minute per IP");
+    const int rateLimitPerMinute = configManager.getServerConfig().security.maxConnectionsPerMinute;
+    sshServer->setConnectionRateLimitPerMinute(rateLimitPerMinute);
+    if (rateLimitPerMinute <= 0) {
+        LOG_INFO("Connection rate limit disabled");
+    } else {
+        LOG_INFO("Connection rate limit set to " +
+                 std::to_string(rateLimitPerMinute) +
+                 " per minute per IP");
+    }
     
     if (!sshServer->start()) {
         LOG_FATAL("Failed to start SSH server");

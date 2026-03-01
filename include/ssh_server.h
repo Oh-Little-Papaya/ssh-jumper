@@ -29,7 +29,7 @@ class InteractiveSession;
 // ============================================
 class ConnectionRateLimiter {
 public:
-    explicit ConnectionRateLimiter(int maxConnectionsPerMinute = 10);
+    explicit ConnectionRateLimiter(int maxConnectionsPerMinute = 0);
     void setMaxConnectionsPerMinute(int maxConnectionsPerMinute);
     bool checkAndRecord(const std::string& clientIp);
     void cleanup();
