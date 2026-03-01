@@ -1,7 +1,5 @@
 # SSH Jump Server
 
-`ssh_jump_server` 和 `ssh_jump_agent` 现在是纯命令行参数驱动，不支持 `-c/--config` 配置文件启动。
-
 ## 1) 安装与编译
 
 一键安装整个项目（自动安装 Folly、编译并安装二进制）：
@@ -13,8 +11,6 @@ cd ssh-jumper
 ```
 
 说明：
-- `ENABLE_FOLLY` 默认就是 `ON`，不需要额外传 `-DENABLE_FOLLY=ON`。
-- 如果 Folly 不可用，配置阶段会直接失败。
 - 安装完成后可直接使用 `/usr/local/bin/ssh_jump_server` 与 `/usr/local/bin/ssh_jump_agent`。
 
 ## 2) 启动 jump-server
