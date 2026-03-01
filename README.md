@@ -4,32 +4,10 @@
 
 ## 1) 安装与编译
 
-安装依赖（Folly 必选）：
+Folly 默认启用，先一键安装 Folly（含依赖）：
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y \
-  build-essential ca-certificates cmake git ninja-build pkg-config \
-  libboost-all-dev libevent-dev libdouble-conversion-dev \
-  libgflags-dev libgoogle-glog-dev libgtest-dev libssl-dev \
-  libunwind-dev libfmt-dev libsodium-dev libzstd-dev liblz4-dev \
-  libsnappy-dev libjemalloc-dev zlib1g-dev libbz2-dev liblzma-dev \
-  libssh-dev
-```
-
-安装 Folly：
-
-```bash
-git clone --depth 1 --branch v2024.08.19.00 https://github.com/facebook/folly.git
-cmake -S folly -B folly/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/usr/local \
-  -DBUILD_TESTS=OFF -DBUILD_BENCHMARKS=OFF -DBUILD_EXAMPLES=OFF \
-  -DBUILD_SHARED_LIBS=ON
-cmake --build folly/build -j"$(nproc)"
-sudo cmake --install folly/build
-sudo ldconfig
-rm -rf folly
+./scripts/install_folly.sh
 ```
 
 编译项目：
@@ -37,9 +15,14 @@ rm -rf folly
 ```bash
 git clone <repository-url>
 cd ssh-jumper
-cmake -S . -B build -G Ninja -DENABLE_FOLLY=ON -DCMAKE_PREFIX_PATH=/usr/local
+sudo apt-get install -y libssh-dev
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j"$(nproc)"
 ```
+
+说明：
+- `ENABLE_FOLLY` 默认就是 `ON`，不需要额外传 `-DENABLE_FOLLY=ON`。
+- 如果 Folly 不可用，配置阶段会直接失败。
 
 ## 2) 启动 jump-server
 

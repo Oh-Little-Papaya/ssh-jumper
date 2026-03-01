@@ -11,20 +11,18 @@
 ## 1. 安装（1 分钟）
 
 ```bash
-# 安装依赖
-sudo apt-get update
-sudo apt-get install -y cmake build-essential libssh-dev libssl-dev pkg-config
-
-# 克隆并编译
+# 安装 Folly（含依赖）
 git clone <repository-url>
 cd ssh-jumper
-mkdir build && cd build
-# 默认启用 Folly 优化（默认要求必须可用）
-cmake -DENABLE_FOLLY=ON ..
-make -j$(nproc)
+./scripts/install_folly.sh
+
+# 安装项目额外依赖并编译
+sudo apt-get install -y libssh-dev
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
 
 # 安装到系统
-sudo make install
+sudo cmake --install build
 ```
 
 ## 2. 准备启动参数（1 分钟）

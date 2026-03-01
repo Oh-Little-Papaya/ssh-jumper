@@ -89,7 +89,7 @@ if(ENABLE_FOLLY)
         else()
             message(FATAL_ERROR
                 "ENABLE_FOLLY=ON but Folly not found. "
-                "Install Folly dependencies first, or explicitly build with -DENABLE_FOLLY=OFF.")
+                "Install Folly first (for example: ./scripts/install_folly.sh).")
         endif()
     endif()
 endif()
