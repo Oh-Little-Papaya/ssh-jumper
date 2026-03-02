@@ -303,6 +303,62 @@ bool SSHConnection::initialize() {
     return true;
 }
 
+ssh_session SSHConnection::getSession() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return session_;
+}
+
+ssh_channel SSHConnection::getChannel() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_;
+}
+
+std::chrono::steady_clock::time_point SSHConnection::getLastActivity() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lastActivity_;
+}
+
+void SSHConnection::updateActivity() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    lastActivity_ = std::chrono::steady_clock::now();
+}
+
+int SSHConnection::readChannel(char* buffer, size_t len, int timeoutMs) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!channel_) {
+        return -1;
+    }
+    return ssh_channel_read_timeout(channel_, buffer, len, 0, timeoutMs);
+}
+
+int SSHConnection::writeChannel(const char* data, size_t len) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!channel_) {
+        return -1;
+    }
+    return ssh_channel_write(channel_, data, len);
+}
+
+bool SSHConnection::hasSession() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return session_ != nullptr;
+}
+
+bool SSHConnection::hasChannel() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_ != nullptr;
+}
+
+bool SSHConnection::isChannelOpen() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_ && ssh_channel_is_open(channel_);
+}
+
+bool SSHConnection::isChannelEof() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return channel_ && ssh_channel_is_eof(channel_);
+}
+
 void SSHConnection::start() {
     const auto config = ConfigManager::getInstance().getServerConfig();
     const int authMethodsMask = resolveAuthMethodsMask(config.ssh.authMethods);
@@ -369,33 +425,37 @@ void SSHConnection::start() {
 }
 
 void SSHConnection::close() {
-    std::unique_lock<std::mutex> lock(mutex_);
-    
-    // 关闭交互式会话
-    if (interactiveSession_) {
-        interactiveSession_->stop();
-        interactiveSession_.reset();
-    }
-    
-    // 关闭通道
-    if (channel_) {
-        ssh_channel_close(channel_);
-        ssh_channel_free(channel_);
+    std::shared_ptr<InteractiveSession> interactiveSession;
+    ssh_channel channel = nullptr;
+    ssh_session session = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        interactiveSession = std::move(interactiveSession_);
+        channel = channel_;
         channel_ = nullptr;
-    }
-    
-    // 关闭会话
-    if (session_) {
-        ssh_disconnect(session_);
-        ssh_free(session_);
+        session = session_;
         session_ = nullptr;
     }
-    
-    // 从连接池移除
+
+    // 先停止交互会话，再释放 libssh 资源，避免并发读写造成数据竞争。
+    if (interactiveSession) {
+        interactiveSession->stop();
+    }
+
+    if (channel) {
+        ssh_channel_close(channel);
+        ssh_channel_free(channel);
+    }
+
+    if (session) {
+        ssh_disconnect(session);
+        ssh_free(session);
+    }
+
     if (server_) {
         server_->getConnectionPool()->removeConnection(connId_);
     }
-    
+
     LOG_INFO("SSHConnection closed, id=" + connId_);
 }
 
@@ -710,23 +770,14 @@ void SSHServer::stop() {
     if (sshbind_) {
         socket_t fd = ssh_bind_get_fd(sshbind_);
         if (fd != -1) {
-            // 使用 closeSocket 安全关闭，它会将 fd 置为 -1
             int tmpFd = fd;
             closeSocket(tmpFd);
         }
     }
 
-    // 等待 accept 线程退出（最多等待 2 秒）
+    // 等待 accept 线程退出，避免对象销毁后后台线程继续访问 this。
     if (acceptThread_.joinable()) {
-        // 给线程一点时间来检测 running_ = false
-        for (int i = 0; i < 20 && acceptThread_.joinable(); ++i) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        if (acceptThread_.joinable()) {
-            // 如果还在运行，只能 detach
-            acceptThread_.detach();
-            LOG_WARN("Accept thread did not stop gracefully, detached");
-        }
+        acceptThread_.join();
     }
 
     if (connPool_) {
@@ -776,16 +827,24 @@ void SSHServer::acceptLoop() {
         struct sockaddr_storage clientAddr;
         socklen_t addrLen = sizeof(clientAddr);
         socket_t fd = ssh_get_fd(session);
-        getpeername(fd, (struct sockaddr*)&clientAddr, &addrLen);
+        std::string clientIpStr = "unknown";
+        memset(&clientAddr, 0, sizeof(clientAddr));
+        if (fd != -1 && getpeername(fd, reinterpret_cast<struct sockaddr*>(&clientAddr), &addrLen) == 0) {
+            char clientIp[INET6_ADDRSTRLEN] = {0};
+            const void* addrPtr = nullptr;
+            int family = AF_UNSPEC;
+            if (clientAddr.ss_family == AF_INET) {
+                family = AF_INET;
+                addrPtr = &reinterpret_cast<struct sockaddr_in*>(&clientAddr)->sin_addr;
+            } else if (clientAddr.ss_family == AF_INET6) {
+                family = AF_INET6;
+                addrPtr = &reinterpret_cast<struct sockaddr_in6*>(&clientAddr)->sin6_addr;
+            }
 
-        char clientIp[INET6_ADDRSTRLEN];
-        if (clientAddr.ss_family == AF_INET) {
-            inet_ntop(AF_INET, &((struct sockaddr_in*)&clientAddr)->sin_addr, clientIp, sizeof(clientIp));
-        } else {
-            inet_ntop(AF_INET6, &((struct sockaddr_in6*)&clientAddr)->sin6_addr, clientIp, sizeof(clientIp));
+            if (addrPtr && inet_ntop(family, addrPtr, clientIp, sizeof(clientIp)) != nullptr) {
+                clientIpStr = clientIp;
+            }
         }
-
-        std::string clientIpStr(clientIp);
 
         // 检查是否被封禁
         if (authFailureTracker_.isBlocked(clientIpStr)) {

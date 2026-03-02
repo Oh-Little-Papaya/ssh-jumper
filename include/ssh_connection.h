@@ -38,14 +38,22 @@ public:
     const std::string& getUsername() const { return username_; }
     
     // 获取 libssh 会话和通道
-    ssh_session getSession() { return session_; }
-    ssh_channel getChannel() { return channel_; }
+    ssh_session getSession();
+    ssh_channel getChannel();
     
     // 获取最后活动时间
-    std::chrono::steady_clock::time_point getLastActivity() const { return lastActivity_; }
+    std::chrono::steady_clock::time_point getLastActivity() const;
     
     // 更新活动时间
-    void updateActivity() { lastActivity_ = std::chrono::steady_clock::now(); }
+    void updateActivity();
+
+    // 线程安全的通道 I/O（供 DataBridge 等并发场景使用）
+    int readChannel(char* buffer, size_t len, int timeoutMs = 1);
+    int writeChannel(const char* data, size_t len);
+    bool hasSession() const;
+    bool hasChannel() const;
+    bool isChannelOpen() const;
+    bool isChannelEof() const;
     
     // 获取连接ID
     const std::string& getId() const { return connId_; }

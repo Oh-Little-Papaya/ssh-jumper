@@ -358,6 +358,25 @@ TEST(asset_manager_can_user_access, "资产管理") {
     return true;
 }
 
+TEST(asset_manager_invalid_max_sessions_value, "资产管理") {
+    AssetManager manager;
+
+    const char* testFile = "/tmp/test_invalid_max_sessions.conf";
+    std::ofstream file(testFile);
+    file << "[user:developer]\n";
+    file << "allowed_patterns = web-*\n";
+    file << "max_sessions = invalid-value\n";
+    file.close();
+
+    ASSERT_TRUE(manager.loadUserPermissions(testFile));
+    std::remove(testFile);
+
+    auto perm = manager.getUserPermission("developer");
+    ASSERT_TRUE(perm.has_value());
+    ASSERT_EQ(10, perm->maxSessions);
+    return true;
+}
+
 TEST(asset_manager_on_asset_changed_callback, "资产管理") {
     AssetManager manager;
     

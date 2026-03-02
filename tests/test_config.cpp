@@ -560,3 +560,17 @@ TEST(config_validate_auth_methods_invalid, "配置管理") {
     ASSERT_FALSE(config.validate());
     return true;
 }
+
+TEST(config_verify_pbkdf2_invalid_iterations, "配置管理") {
+    ConfigManager config;
+    config.updateServerConfig([](ServerConfig& serverConfig) {
+        UserAuthInfo user;
+        user.username = "badpbkdf2";
+        user.enabled = true;
+        user.passwordHash = "PBKDF2$not-a-number$0011$2233";
+        serverConfig.users[user.username] = user;
+    });
+
+    ASSERT_FALSE(config.verifyUserPassword("badpbkdf2", "any-password"));
+    return true;
+}

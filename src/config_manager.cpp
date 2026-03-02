@@ -347,7 +347,11 @@ bool ConfigManager::verifyPbkdf2Password(const std::string& password, const std:
         return false;
     }
 
-    int iterations = std::stoi(parts[1]);
+    const int iterations = safeStringToInt(parts[1], -1);
+    if (iterations <= 0 || iterations > 10000000) {
+        LOG_ERROR("Invalid PBKDF2 iteration count");
+        return false;
+    }
     std::string saltHex = parts[2];
     std::string expectedHashHex = parts[3];
 

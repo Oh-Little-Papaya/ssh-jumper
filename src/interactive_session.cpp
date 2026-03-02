@@ -322,19 +322,16 @@ void DataBridge::userToTargetLoop() {
     char buffer[DEFAULT_BUFFER_SIZE];
 
     while (running_) {
-        auto userSession = userConn_->getSession();
-        auto userChannel = userConn_->getChannel();
-
-        if (!userSession || !userChannel) {
+        if (!userConn_->hasSession() || !userConn_->hasChannel()) {
             break;
         }
 
         // 检查 channel 是否仍然打开
-        if (!ssh_channel_is_open(userChannel)) {
+        if (!userConn_->isChannelOpen()) {
             break;
         }
 
-        int n = ssh_channel_read_timeout(userChannel, buffer, sizeof(buffer), 0, 1);
+        int n = userConn_->readChannel(buffer, sizeof(buffer), 1);
         if (n > 0) {
             int written = 0;
             while (written < n) {
@@ -356,7 +353,7 @@ void DataBridge::userToTargetLoop() {
 
         // n == 0 时需要检查是否 EOF
         if (n == 0) {
-            if (ssh_channel_is_eof(userChannel)) {
+            if (userConn_->isChannelEof()) {
                 // 用户连接已关闭
                 LOG_INFO("User channel EOF, closing connection");
                 break;
@@ -377,21 +374,18 @@ void DataBridge::targetToUserLoop() {
     while (running_) {
         int n = targetClient_->read(buffer, sizeof(buffer));
         if (n > 0) {
-            auto userSession = userConn_->getSession();
-            auto userChannel = userConn_->getChannel();
-
-            if (!userSession || !userChannel) {
+            if (!userConn_->hasSession() || !userConn_->hasChannel()) {
                 break;
             }
 
             // 检查 channel 是否仍然打开
-            if (!ssh_channel_is_open(userChannel)) {
+            if (!userConn_->isChannelOpen()) {
                 break;
             }
 
             int written = 0;
             while (written < n) {
-                int ret = ssh_channel_write(userChannel, buffer + written, n - written);
+                int ret = userConn_->writeChannel(buffer + written, n - written);
                 if (ret > 0) {
                     written += ret;
                 } else if (ret != SSH_AGAIN) {
@@ -705,12 +699,11 @@ std::string InteractiveSession::readUserInput() {
     std::string input;
     
     while (running_) {
-        auto channel = conn->getChannel();
-        if (!channel) {
+        if (!conn->hasChannel()) {
             break;
         }
-        
-        int n = ssh_channel_read(channel, buffer, sizeof(buffer), 0);
+
+        int n = conn->readChannel(buffer, sizeof(buffer), 10);
         if (n > 0) {
             for (int i = 0; i < n; i++) {
                 char c = buffer[i];
@@ -998,18 +991,18 @@ void InteractiveSession::sendToUser(const std::string& data) {
     if (!conn) {
         return;
     }
-    
-    auto channel = conn->getChannel();
-    if (!channel) {
+
+    if (!conn->hasChannel()) {
         return;
     }
-    
+
     size_t written = 0;
     while (written < data.length()) {
-        int ret = ssh_channel_write(channel, data.c_str() + written, 
-                                        data.length() - written);
+        int ret = conn->writeChannel(data.c_str() + written, data.length() - written);
         if (ret > 0) {
             written += ret;
+        } else if (ret == SSH_AGAIN) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         } else if (ret != SSH_AGAIN) {
             break;
         }

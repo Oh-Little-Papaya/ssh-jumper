@@ -341,7 +341,12 @@ bool AssetManager::loadUserPermissions(const std::string& configPath) {
                 currentPerm.deniedAssets.push_back(trimString(asset));
             }
         } else if (key == "max_sessions") {
-            currentPerm.maxSessions = std::stoi(value);
+            int parsed = safeStringToInt(value, currentPerm.maxSessions);
+            if (parsed <= 0) {
+                LOG_WARN("Invalid max_sessions for user " + currentUser + ", keep default");
+            } else {
+                currentPerm.maxSessions = parsed;
+            }
         } else if (key == "need_approval") {
             currentPerm.needApproval = (value == "true" || value == "1");
         }
