@@ -4,9 +4,11 @@
 
 ## 前提条件
 
-- Linux 系统（Ubuntu 20.04+ / CentOS 8+）
+- Linux 系统（Ubuntu / Debian / RHEL / CentOS Stream / AlmaLinux / Rocky / Fedora）
 - 具有 sudo 权限的用户
 - 基本的命令行知识
+
+说明：`./scripts/install_project.sh` 会自动识别 `apt-get`、`dnf` 或 `yum`。
 
 ## 1. 安装（1 分钟）
 

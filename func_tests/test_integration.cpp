@@ -7,6 +7,22 @@
 #include "test_env.h"
 #include <fstream>
 
+namespace {
+
+bool waitForNodeOnline(const std::string& agentId, bool expectedOnline,
+                       std::chrono::seconds timeout = std::chrono::seconds(5)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (func_test::g_testEnv.isNodeOnline(agentId) == expectedOnline) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    return func_test::g_testEnv.isNodeOnline(agentId) == expectedOnline;
+}
+
+} // namespace
+
 using namespace func_test;
 
 // ============================================
@@ -28,6 +44,7 @@ FUNC_TEST_WITH_TIMEOUT(complete_workflow, "集成测试", 30) {
     FUNC_ASSERT_TRUE(g_testEnv.startAgent("web-01", g_testEnv.getClusterToken(), "web-server-01"));
     std::this_thread::sleep_for(std::chrono::seconds(2));
     FUNC_ASSERT_TRUE(g_testEnv.isAgentRunning());
+    FUNC_ASSERT_TRUE(waitForNodeOnline("web-01", true));
     std::cout << "OK (PID: " << g_testEnv.getAgentPid() << ")" << std::flush;
     
     // 3. 等待一段时间（模拟心跳）
@@ -41,6 +58,7 @@ FUNC_TEST_WITH_TIMEOUT(complete_workflow, "集成测试", 30) {
     std::cout << "\n    [4/5] 停止 Agent... " << std::flush;
     g_testEnv.stopAgent();
     FUNC_ASSERT_TRUE(!g_testEnv.isAgentRunning());
+    FUNC_ASSERT_TRUE(waitForNodeOnline("web-01", false));
     std::cout << "OK" << std::flush;
     
     // 5. 停止服务器
@@ -76,7 +94,8 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "web-01",
         "-t", g_testEnv.getClusterToken(),
-        "-n", "web-server-01"
+        "-n", "web-server-01",
+        "-I", "10.10.0.11"
     };
     FUNC_ASSERT_TRUE(agent1.start(g_testEnv.getAgentBinary(), args1));
     
@@ -85,7 +104,8 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "web-02",
         "-t", g_testEnv.getClusterToken(),
-        "-n", "web-server-02"
+        "-n", "web-server-02",
+        "-I", "10.10.0.12"
     };
     FUNC_ASSERT_TRUE(agent2.start(g_testEnv.getAgentBinary(), args2));
     
@@ -94,17 +114,21 @@ FUNC_TEST_WITH_TIMEOUT(multiple_agents, "集成测试", 30) {
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "db-01",
         "-t", g_testEnv.getClusterToken(),
-        "-n", "db-server-01"
+        "-n", "db-server-01",
+        "-I", "10.10.0.13"
     };
     FUNC_ASSERT_TRUE(agent3.start(g_testEnv.getAgentBinary(), args3));
     
     // 等待 Agent 连接
     std::this_thread::sleep_for(std::chrono::seconds(3));
-    
+
     // 验证所有 Agent 都在运行
     FUNC_ASSERT_TRUE(agent1.isRunning());
     FUNC_ASSERT_TRUE(agent2.isRunning());
     FUNC_ASSERT_TRUE(agent3.isRunning());
+    FUNC_ASSERT_TRUE(waitForNodeOnline("web-01", true));
+    FUNC_ASSERT_TRUE(waitForNodeOnline("web-02", true));
+    FUNC_ASSERT_TRUE(waitForNodeOnline("db-01", true));
     
     // 停止所有 Agent
     agent1.stop();
@@ -137,7 +161,8 @@ FUNC_TEST_WITH_TIMEOUT(security_invalid_token, "集成测试", 20) {
         "-p", std::to_string(g_testEnv.getClusterPort()),
         "-i", "web-01",
         "-t", "wrong-token",
-        "-n", "web-server-01"
+        "-n", "web-server-01",
+        "-I", "10.10.0.11"
     };
     FUNC_ASSERT_TRUE(badAgent.start(g_testEnv.getAgentBinary(), args));
     
@@ -148,6 +173,7 @@ FUNC_TEST_WITH_TIMEOUT(security_invalid_token, "集成测试", 20) {
     // 注意: 这取决于 Agent 的实现，可能保持运行但无法注册
     
     badAgent.stop();
+    FUNC_ASSERT_TRUE(waitForNodeOnline("web-01", false));
     g_testEnv.stopServer();
     g_testEnv.cleanup();
     

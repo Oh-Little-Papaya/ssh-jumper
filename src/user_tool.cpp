@@ -12,6 +12,8 @@
  *   ./ssh_jump_user_tool --disable-user <username> [--users-file <path>]
  */
 
+#include "password_utils.h"
+
 #include <iostream>
 #include <string>
 #include <vector>
@@ -19,15 +21,9 @@
 #include <sstream>
 #include <cstring>
 #include <cerrno>
-#include <openssl/evp.h>
-#include <openssl/rand.h>
 #include <iomanip>
 #include <sys/stat.h>
 
-// PBKDF2 配置常量
-constexpr int PBKDF2_ITERATIONS = 100000;
-constexpr int PBKDF2_SALT_LENGTH = 32;
-constexpr int PBKDF2_HASH_LENGTH = 64;
 constexpr const char* DEFAULT_USERS_FILE = "/etc/ssh_jump/users.conf";
 
 // 简单的字符串处理函数
@@ -48,59 +44,6 @@ std::vector<std::string> splitString(const std::string& str, char delimiter) {
         }
     }
     return tokens;
-}
-
-// 生成随机盐值
-std::string generateSalt(size_t length) {
-    std::string salt(length, '\0');
-    if (RAND_bytes(reinterpret_cast<unsigned char*>(&salt[0]), length) != 1) {
-        std::cerr << "Error: RAND_bytes failed to generate salt" << std::endl;
-        return "";
-    }
-    return salt;
-}
-
-// 使用 PBKDF2-HMAC-SHA512 计算密码哈希
-std::string hashPasswordPbkdf2(const std::string& password) {
-    // 生成随机盐值
-    std::string salt = generateSalt(PBKDF2_SALT_LENGTH);
-    if (salt.empty()) {
-        return "";
-    }
-
-    // 计算哈希
-    unsigned char hash[PBKDF2_HASH_LENGTH];
-    int ret = PKCS5_PBKDF2_HMAC(
-        password.c_str(), password.length(),
-        reinterpret_cast<const unsigned char*>(salt.c_str()), salt.length(),
-        PBKDF2_ITERATIONS,
-        EVP_sha512(),
-        PBKDF2_HASH_LENGTH, hash
-    );
-
-    if (ret != 1) {
-        std::cerr << "Error: PKCS5_PBKDF2_HMAC failed" << std::endl;
-        return "";
-    }
-
-    // 格式: PBKDF2$iterations$salt_hex$hash_hex
-    std::stringstream ss;
-    ss << "PBKDF2$" << PBKDF2_ITERATIONS << "$";
-
-    // 盐值转十六进制
-    for (int i = 0; i < PBKDF2_SALT_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0')
-           << static_cast<int>(static_cast<unsigned char>(salt[i]));
-    }
-    ss << "$";
-
-    // 哈希转十六进制
-    for (int i = 0; i < PBKDF2_HASH_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0')
-           << static_cast<int>(hash[i]);
-    }
-
-    return ss.str();
 }
 
 // 用户信息结构
@@ -222,7 +165,7 @@ bool createUser(const std::string& usersFile, const std::string& username,
     // 创建新用户
     UserInfo newUser;
     newUser.username = username;
-    newUser.passwordHash = hashPasswordPbkdf2(password);
+    newUser.passwordHash = sshjump::security::hashPasswordPbkdf2(password);
     newUser.mustChangePassword = mustChange;
     newUser.enabled = true;
 
@@ -309,7 +252,7 @@ bool changePassword(const std::string& usersFile, const std::string& username,
 
     for (auto& user : users) {
         if (user.username == username) {
-            user.passwordHash = hashPasswordPbkdf2(newPassword);
+            user.passwordHash = sshjump::security::hashPasswordPbkdf2(newPassword);
             user.mustChangePassword = mustChange;
             found = true;
             break;

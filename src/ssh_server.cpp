@@ -287,7 +287,11 @@ void ConnectionPool::closeAll() {
 
 SSHConnection::SSHConnection(ssh_session session, ssh_bind sshbind,
                              SSHServer* server)
-    : session_(session),
+    : sessionHolder_(session, [](ssh_session_struct* ptr) {
+        if (ptr) {
+          ssh_free(reinterpret_cast<ssh_session>(ptr));
+        }
+      }),
       sshbind_(sshbind),
       server_(server),
       channel_(nullptr),
@@ -301,7 +305,7 @@ SSHConnection::SSHConnection(ssh_session session, ssh_bind sshbind,
 SSHConnection::~SSHConnection() { close(); }
 
 bool SSHConnection::initialize() {
-  if (!session_) {
+  if (!getSession()) {
     LOG_ERROR("SSH session is null");
     return false;
   }
@@ -312,7 +316,7 @@ bool SSHConnection::initialize() {
 
 ssh_session SSHConnection::getSession() {
   std::lock_guard<std::mutex> lock(mutex_);
-  return session_;
+  return reinterpret_cast<ssh_session>(sessionHolder_.get());
 }
 
 ssh_channel SSHConnection::getChannel() {
@@ -348,7 +352,7 @@ int SSHConnection::writeChannel(const char* data, size_t len) {
 
 bool SSHConnection::hasSession() const {
   std::lock_guard<std::mutex> lock(mutex_);
-  return session_ != nullptr;
+  return sessionHolder_ != nullptr;
 }
 
 bool SSHConnection::hasChannel() const {
@@ -367,6 +371,18 @@ bool SSHConnection::isChannelEof() const {
 }
 
 void SSHConnection::start() {
+  std::shared_ptr<ssh_session_struct> sessionHolder;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sessionHolder = sessionHolder_;
+  }
+  ssh_session session = reinterpret_cast<ssh_session>(sessionHolder.get());
+  if (!session) {
+    LOG_ERROR("SSH session is null at start");
+    close();
+    return;
+  }
+
   const auto config = ConfigManager::getInstance().getServerConfig();
   const int authMethodsMask = resolveAuthMethodsMask(config.ssh.authMethods);
 
@@ -376,20 +392,20 @@ void SSHConnection::start() {
   serverCallbacks_.auth_password_function = &SSHConnection::onAuthPassword;
   serverCallbacks_.auth_pubkey_function = &SSHConnection::onAuthPublickey;
   ssh_callbacks_init(&serverCallbacks_);
-  if (ssh_set_server_callbacks(session_, &serverCallbacks_) != SSH_OK) {
+  if (ssh_set_server_callbacks(session, &serverCallbacks_) != SSH_OK) {
     LOG_ERROR("Failed to set server callbacks: " +
-              std::string(ssh_get_error(session_)));
+              std::string(ssh_get_error(session)));
     close();
     return;
   }
-  ssh_set_message_callback(session_, &SSHConnection::onMessage, this);
-  ssh_set_auth_methods(session_, authMethodsMask);
+  ssh_set_message_callback(session, &SSHConnection::onMessage, this);
+  ssh_set_auth_methods(session, authMethodsMask);
 
   // 处理密钥交换
-  int rc = ssh_handle_key_exchange(session_);
+  int rc = ssh_handle_key_exchange(session);
   if (rc != SSH_OK) {
     LOG_ERROR("SSH key exchange failed: " +
-              std::string(ssh_get_error(session_)));
+              std::string(ssh_get_error(session)));
     close();
     return;
   }
@@ -401,9 +417,9 @@ void SSHConnection::start() {
   server_->getConnectionPool()->addConnection(connId_, shared_from_this());
 
   // 回调驱动认证阶段
-  ssh_set_blocking(session_, 0);
-  while (!authenticated_ && session_ && ssh_is_connected(session_)) {
-    if (ssh_execute_message_callbacks(session_) != SSH_OK) {
+  ssh_set_blocking(session, 0);
+  while (!authenticated_ && ssh_is_connected(session)) {
+    if (ssh_execute_message_callbacks(session) != SSH_OK) {
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -421,15 +437,14 @@ void SSHConnection::start() {
 
 void SSHConnection::close() {
   std::shared_ptr<InteractiveSession> interactiveSession;
+  std::shared_ptr<ssh_session_struct> sessionHolder;
   ssh_channel channel = nullptr;
-  ssh_session session = nullptr;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     interactiveSession = std::move(interactiveSession_);
     channel = channel_;
     channel_ = nullptr;
-    session = session_;
-    session_ = nullptr;
+    sessionHolder = std::move(sessionHolder_);
   }
 
   // 先停止交互会话，再释放 libssh 资源，避免并发读写造成数据竞争。
@@ -442,9 +457,8 @@ void SSHConnection::close() {
     ssh_channel_free(channel);
   }
 
-  if (session) {
-    ssh_disconnect(session);
-    ssh_free(session);
+  if (sessionHolder) {
+    ssh_disconnect(reinterpret_cast<ssh_session>(sessionHolder.get()));
   }
 
   if (server_) {
@@ -455,11 +469,21 @@ void SSHConnection::close() {
 }
 
 void SSHConnection::handleSession() {
-  while (session_ && ssh_is_connected(session_)) {
-    if (ssh_execute_message_callbacks(session_) != SSH_OK) {
-      if (session_) {
+  std::shared_ptr<ssh_session_struct> sessionHolder;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sessionHolder = sessionHolder_;
+  }
+  ssh_session session = reinterpret_cast<ssh_session>(sessionHolder.get());
+  if (!session) {
+    return;
+  }
+
+  while (ssh_is_connected(session)) {
+    if (ssh_execute_message_callbacks(session) != SSH_OK) {
+      if (ssh_is_connected(session)) {
         LOG_ERROR("Failed to process SSH messages: " +
-                  std::string(ssh_get_error(session_)));
+                  std::string(ssh_get_error(session)));
       }
       break;
     }
@@ -620,8 +644,11 @@ void SSHConnection::handleChannelOpen(ssh_message message) {
   // 使用 libssh 的正确函数接受通道打开请求
   channel_ = ssh_message_channel_request_open_reply_accept(message);
   if (!channel_) {
+    ssh_session session = getSession();
+    const std::string err = session ? std::string(ssh_get_error(session))
+                                    : std::string("session closed");
     LOG_ERROR("Failed to accept channel: " +
-              std::string(ssh_get_error(session_)));
+              err);
     return;
   }
 

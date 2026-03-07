@@ -17,7 +17,7 @@ struct SSHConfig {
     std::string listenAddress = "0.0.0.0";
     int port = DEFAULT_SSH_PORT;
     std::string hostKeyPath = "/etc/ssh_jump/host_key";
-    std::string authMethods = "publickey";
+    std::string authMethods = "password,publickey";
     bool permitRootLogin = false;
     int maxAuthTries = 3;
     int idleTimeout = 300;
@@ -147,6 +147,7 @@ public:
     bool createUser(const UserAuthInfo& user);
     bool updateUser(const std::string& username, const std::function<bool(UserAuthInfo&)>& updater);
     bool deleteUser(const std::string& username);
+    bool persistUsers();
     
     // 验证配置
     bool validate();
@@ -155,6 +156,10 @@ public:
     void printConfig();
     
 private:
+    bool saveUsersUnlocked();
+    static bool saveUsersToFile(const std::string& path,
+                                const std::vector<UserAuthInfo>& users);
+
     // 解析配置行
     static void parseLine(const std::string& line, const std::string& currentSection, ServerConfig& config);
     

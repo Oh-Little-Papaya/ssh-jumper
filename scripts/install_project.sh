@@ -15,6 +15,48 @@ else
     SUDO="sudo"
 fi
 
+detect_pkg_manager() {
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "apt-get"
+        return 0
+    fi
+    if command -v dnf >/dev/null 2>&1; then
+        echo "dnf"
+        return 0
+    fi
+    if command -v yum >/dev/null 2>&1; then
+        echo "yum"
+        return 0
+    fi
+    return 1
+}
+
+install_project_dependencies() {
+    local pkg_manager="$1"
+    case "${pkg_manager}" in
+        apt-get)
+            $SUDO apt-get update
+            $SUDO apt-get install -y libssh-dev
+            ;;
+        dnf)
+            $SUDO dnf install -y libssh-devel
+            ;;
+        yum)
+            $SUDO yum install -y libssh-devel
+            ;;
+        *)
+            echo "[ERROR] Unsupported package manager: ${pkg_manager}" >&2
+            return 1
+            ;;
+    esac
+}
+
+PKG_MANAGER="$(detect_pkg_manager || true)"
+if [[ -z "${PKG_MANAGER}" ]]; then
+    echo "[ERROR] No supported package manager found (apt-get/dnf/yum)" >&2
+    exit 1
+fi
+
 echo "[INFO] One-click install started"
 echo "[INFO] PROJECT_ROOT=${PROJECT_ROOT}"
 echo "[INFO] BUILD_TYPE=${BUILD_TYPE}"
@@ -25,8 +67,7 @@ echo "[INFO] Installing Folly and its dependencies..."
 FOLLY_PREFIX="${INSTALL_PREFIX}" "${SCRIPT_DIR}/install_folly.sh"
 
 echo "[INFO] Installing project dependencies..."
-$SUDO apt-get update
-$SUDO apt-get install -y libssh-dev
+install_project_dependencies "${PKG_MANAGER}"
 
 if [[ -f /usr/lib/x86_64-linux-gnu/libgflags.so ]] && [[ ! -e /usr/lib/x86_64-linux-gnu/libgflags_shared.so ]]; then
     echo "[INFO] Creating libgflags_shared.so compatibility symlink..."

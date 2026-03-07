@@ -16,17 +16,19 @@
 #include "cluster_manager.h"
 #include "asset_manager.h"
 #include "node_registry.h"
+#include "password_utils.h"
 #include "config_manager.h"
 
 #include <getopt.h>
+#include <cstdlib>
 #include <filesystem>
-#include <openssl/evp.h>
-#include <openssl/rand.h>
 #include <sstream>
 #include <system_error>
 #include <sys/stat.h>
 
 using namespace sshjump;
+
+namespace fs = std::filesystem;
 
 // 全局运行标志
 static volatile sig_atomic_t g_running = 1;
@@ -49,7 +51,9 @@ void printUsage(const char* program) {
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
               << "      --token <token>                    Shared cluster token for all agents\n"
               << "      --admin-token <token>              Admin API token (for cluster admin tool)\n"
-              << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable)\n"
+              << "      --users-file <path>                Persisted users file (default: /etc/ssh_jump/users.conf)\n"
+              << "      --agent-token-file <path>          Persisted agent token file (default: /etc/ssh_jump/agent_tokens.conf)\n"
+              << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable, IPv6 use [addr])\n"
               << "      --default-target-user <user>       Default target SSH user (default: root)\n"
               << "      --default-target-password <pass>   Default target SSH password\n"
               << "      --default-target-private-key <path>    Default target private key path\n"
@@ -59,6 +63,7 @@ void printUsage(const char* program) {
               << "      --reverse-tunnel-retries <n>       Reverse tunnel retries (default: 3)\n"
               << "      --reverse-tunnel-accept-timeout-ms <ms> Reverse tunnel accept timeout (default: 7000)\n"
               << "      --max-connections-per-minute <n>   SSH connection rate limit (default: 0, unlimited)\n"
+              << "      --pid-file <path>                  PID file path\n"
               << "  -d, --daemon            Run as daemon\n"
               << "  -v, --verbose           Verbose output\n"
               << "  -h, --help              Show this help message\n"
@@ -132,6 +137,22 @@ bool daemonize() {
 
 // 创建 PID 文件
 bool createPidFile(const std::string& path) {
+    if (path.empty()) {
+        return true;
+    }
+
+    std::error_code ec;
+    const fs::path pidPath(path);
+    const fs::path parentPath = pidPath.parent_path();
+    if (!parentPath.empty()) {
+        fs::create_directories(parentPath, ec);
+        if (ec) {
+            LOG_ERROR("Failed to create PID directory: " + parentPath.string() +
+                      ", err=" + ec.message());
+            return false;
+        }
+    }
+
     std::ofstream file(path);
     if (!file.is_open()) {
         LOG_ERROR("Failed to create PID file: " + path);
@@ -144,7 +165,23 @@ bool createPidFile(const std::string& path) {
 
 // 删除 PID 文件
 void removePidFile(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
     unlink(path.c_str());
+}
+
+std::string defaultPidFilePath() {
+    if (::geteuid() == 0) {
+        return "/var/run/ssh_jump.pid";
+    }
+
+    const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
+    if (runtimeDir && runtimeDir[0] != '\0') {
+        return std::string(runtimeDir) + "/ssh_jump.pid";
+    }
+
+    return "/tmp/ssh_jump_" + std::to_string(::getuid()) + ".pid";
 }
 
 bool splitSpec(const std::string& spec, char delimiter, std::string& left, std::string& right) {
@@ -157,53 +194,53 @@ bool splitSpec(const std::string& spec, char delimiter, std::string& left, std::
     return !left.empty() && !right.empty();
 }
 
-std::string hashPasswordPbkdf2(const std::string& plainText) {
-    constexpr int kIterations = 100000;
-    constexpr int kSaltLength = 32;
-    constexpr int kHashLength = 64;
-
-    std::vector<uint8_t> salt(kSaltLength, 0);
-    if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
-        return "";
-    }
-
-    std::vector<uint8_t> hash(kHashLength, 0);
-    if (PKCS5_PBKDF2_HMAC(plainText.c_str(),
-                          static_cast<int>(plainText.size()),
-                          salt.data(),
-                          static_cast<int>(salt.size()),
-                          kIterations,
-                          EVP_sha512(),
-                          static_cast<int>(hash.size()),
-                          hash.data()) != 1) {
-        return "";
-    }
-
-    std::ostringstream oss;
-    oss << "PBKDF2$" << kIterations << "$"
-        << bytesToHex(salt.data(), salt.size()) << "$"
-        << bytesToHex(hash.data(), hash.size());
-    return oss.str();
-}
-
 bool parseChildNodeSpec(const std::string& spec, ChildNodeInfo& node) {
-    auto parts = splitString(spec, ':');
-    if (parts.size() < 2) {
+    const size_t firstColon = spec.find(':');
+    if (firstColon == std::string::npos || firstColon == 0 || firstColon + 1 >= spec.size()) {
         return false;
     }
 
     node = ChildNodeInfo();
-    node.nodeId = trimString(parts[0]);
-    node.publicAddress = trimString(parts[1]);
+    node.nodeId = trimString(spec.substr(0, firstColon));
+    std::string rest = spec.substr(firstColon + 1);
+    std::string tail;
 
-    if (parts.size() >= 3 && !trimString(parts[2]).empty()) {
-        node.sshPort = safeStringToInt(trimString(parts[2]), DEFAULT_SSH_PORT);
+    if (rest.empty()) {
+        return false;
     }
-    if (parts.size() >= 4 && !trimString(parts[3]).empty()) {
-        node.clusterPort = safeStringToInt(trimString(parts[3]), DEFAULT_CLUSTER_PORT);
+
+    // IPv6 地址建议使用 [addr] 包裹，避免和 ':' 字段分隔冲突。
+    if (rest.front() == '[') {
+        const size_t endBracket = rest.find(']');
+        if (endBracket == std::string::npos || endBracket <= 1) {
+            return false;
+        }
+        node.publicAddress = trimString(rest.substr(1, endBracket - 1));
+        if (endBracket + 1 < rest.size()) {
+            if (rest[endBracket + 1] != ':') {
+                return false;
+            }
+            tail = rest.substr(endBracket + 2);
+        }
+    } else {
+        const size_t nextColon = rest.find(':');
+        if (nextColon == std::string::npos) {
+            node.publicAddress = trimString(rest);
+        } else {
+            node.publicAddress = trimString(rest.substr(0, nextColon));
+            tail = rest.substr(nextColon + 1);
+        }
     }
-    if (parts.size() >= 5) {
-        node.name = trimString(parts[4]);
+
+    const auto fields = splitString(tail, ':');
+    if (fields.size() >= 1 && !trimString(fields[0]).empty()) {
+        node.sshPort = safeStringToInt(trimString(fields[0]), DEFAULT_SSH_PORT);
+    }
+    if (fields.size() >= 2 && !trimString(fields[1]).empty()) {
+        node.clusterPort = safeStringToInt(trimString(fields[1]), DEFAULT_CLUSTER_PORT);
+    }
+    if (fields.size() >= 3) {
+        node.name = trimString(fields[2]);
     }
     if (node.name.empty()) {
         node.name = node.nodeId;
@@ -276,6 +313,9 @@ int main(int argc, char* argv[]) {
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
     std::string sharedClusterToken;
     std::string adminApiToken;
+    std::string usersFile = SecurityConfig().usersFile;
+    std::string agentTokenFile = ClusterConfig().agentTokenFile;
+    std::string pidFile = defaultPidFilePath();
     std::vector<ChildNodeInfo> cliChildNodes;
     std::string defaultTargetUser = "root";
     std::string defaultTargetPassword;
@@ -305,7 +345,10 @@ int main(int argc, char* argv[]) {
         OPT_RT_PORT_END,
         OPT_RT_RETRIES,
         OPT_RT_ACCEPT_TIMEOUT_MS,
-        OPT_MAX_CONNECTIONS_PER_MINUTE
+        OPT_MAX_CONNECTIONS_PER_MINUTE,
+        OPT_USERS_FILE,
+        OPT_AGENT_TOKEN_FILE,
+        OPT_PID_FILE
     };
     
     // 命令行参数解析
@@ -318,6 +361,8 @@ int main(int argc, char* argv[]) {
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
         {"token", required_argument, nullptr, OPT_SHARED_TOKEN},
         {"admin-token", required_argument, nullptr, OPT_ADMIN_TOKEN},
+        {"users-file", required_argument, nullptr, OPT_USERS_FILE},
+        {"agent-token-file", required_argument, nullptr, OPT_AGENT_TOKEN_FILE},
         {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
         {"default-target-user", required_argument, nullptr, OPT_DEFAULT_TARGET_USER},
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
@@ -328,6 +373,7 @@ int main(int argc, char* argv[]) {
         {"reverse-tunnel-retries", required_argument, nullptr, OPT_RT_RETRIES},
         {"reverse-tunnel-accept-timeout-ms", required_argument, nullptr, OPT_RT_ACCEPT_TIMEOUT_MS},
         {"max-connections-per-minute", required_argument, nullptr, OPT_MAX_CONNECTIONS_PER_MINUTE},
+        {"pid-file", required_argument, nullptr, OPT_PID_FILE},
         {"daemon", no_argument, nullptr, 'd'},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
@@ -384,10 +430,17 @@ int main(int argc, char* argv[]) {
             case OPT_ADMIN_TOKEN:
                 adminApiToken = trimString(optarg);
                 break;
+            case OPT_USERS_FILE:
+                usersFile = trimString(optarg);
+                break;
+            case OPT_AGENT_TOKEN_FILE:
+                agentTokenFile = trimString(optarg);
+                break;
             case OPT_CHILD_NODE: {
                 ChildNodeInfo node;
                 if (!parseChildNodeSpec(optarg, node)) {
-                    std::cerr << "Invalid --child-node format, expected id:addr[:ssh[:cluster[:name]]], got: "
+                    std::cerr << "Invalid --child-node format, expected id:addr[:ssh[:cluster[:name]]] "
+                              << "(IPv6 use [addr]), got: "
                               << optarg << std::endl;
                     return 1;
                 }
@@ -420,6 +473,9 @@ int main(int argc, char* argv[]) {
                 break;
             case OPT_MAX_CONNECTIONS_PER_MINUTE:
                 maxConnectionsPerMinute = safeStringToInt(optarg, 0);
+                break;
+            case OPT_PID_FILE:
+                pidFile = trimString(optarg);
                 break;
             case 'd':
                 runAsDaemon = true;
@@ -497,29 +553,35 @@ int main(int argc, char* argv[]) {
 
         config.cluster.listenAddress = clusterListenAddr;
         config.cluster.port = agentPort;
-        config.cluster.agentTokenFile.clear();
+        config.cluster.agentTokenFile = agentTokenFile;
         config.cluster.reverseTunnelPortStart = reverseTunnelPortStart;
         config.cluster.reverseTunnelPortEnd = reverseTunnelPortEnd;
         config.cluster.reverseTunnelRetries = reverseTunnelRetries;
         config.cluster.reverseTunnelAcceptTimeoutMs = reverseTunnelAcceptTimeoutMs;
 
-        config.assets.permissionsFile.clear();
+        config.assets.permissionsFile = AssetsConfig().permissionsFile;
 
-        config.security.usersFile.clear();
+        config.security.usersFile = usersFile;
         config.security.defaultTargetUser = defaultTargetUser;
         config.security.defaultTargetPassword = defaultTargetPassword;
         config.security.defaultTargetPrivateKey = defaultTargetPrivateKey;
         config.security.defaultTargetPrivateKeyPassword = defaultTargetKeyPassword;
         config.security.maxConnectionsPerMinute = maxConnectionsPerMinute;
 
-        config.management.childNodesFile.clear();
+        config.management.childNodesFile = ManagementConfig().childNodesFile;
     });
+
+    std::error_code fileEc;
+    if (!usersFile.empty() && fs::exists(usersFile, fileEc) &&
+        fs::is_regular_file(usersFile, fileEc)) {
+        configManager.loadUsers(usersFile);
+    }
 
     configManager.updateServerConfig([&](ServerConfig& config) {
         for (const auto& userSpec : cliUsers) {
             UserAuthInfo user;
             user.username = userSpec.first;
-            user.passwordHash = hashPasswordPbkdf2(userSpec.second);
+            user.passwordHash = security::hashPasswordPbkdf2(userSpec.second);
             user.enabled = true;
             if (user.passwordHash.empty()) {
                 LOG_FATAL("Failed to hash CLI password for user: " + user.username);
@@ -538,6 +600,12 @@ int main(int argc, char* argv[]) {
             LOG_INFO("Loaded CLI user-hash: " + user.username);
         }
     });
+
+    if ((!cliUsers.empty() || !cliUsersHash.empty()) && !usersFile.empty()) {
+        if (!configManager.persistUsers()) {
+            LOG_WARN("Failed to persist bootstrap users into: " + usersFile);
+        }
+    }
 
     const auto currentConfig = configManager.getServerConfig();
     if (currentConfig.users.empty()) {
@@ -563,7 +631,6 @@ int main(int argc, char* argv[]) {
     }
     
     // 创建 PID 文件
-    std::string pidFile = "/var/run/ssh_jump.pid";
     if (!createPidFile(pidFile)) {
         LOG_WARN("Failed to create PID file");
     }
@@ -599,6 +666,18 @@ int main(int argc, char* argv[]) {
         clusterConfig.reverseTunnelPortEnd,
         clusterConfig.reverseTunnelRetries,
         clusterConfig.reverseTunnelAcceptTimeoutMs);
+
+    if (!clusterConfig.agentTokenFile.empty()) {
+        std::error_code tokenEc;
+        if (fs::exists(clusterConfig.agentTokenFile, tokenEc) &&
+            fs::is_regular_file(clusterConfig.agentTokenFile, tokenEc)) {
+            if (!clusterManager->loadAgentTokens(clusterConfig.agentTokenFile)) {
+                LOG_WARN("Failed to load agent token file: " + clusterConfig.agentTokenFile);
+            }
+        } else {
+            clusterManager->setAgentTokenFilePath(clusterConfig.agentTokenFile);
+        }
+    }
 
     if (!sharedClusterToken.empty()) {
         clusterManager->setSharedToken(sharedClusterToken);

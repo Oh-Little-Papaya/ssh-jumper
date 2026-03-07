@@ -4,7 +4,7 @@
 
 ### 服务器要求
 
-- **操作系统**: Linux (推荐 Ubuntu 20.04+/CentOS 8+)
+- **操作系统**: Linux (推荐 Ubuntu 20.04+ / Debian 12+ / RHEL 8+ / CentOS Stream 8+)
 - **CPU**: 2 核以上
 - **内存**: 4GB 以上
 - **磁盘**: 20GB 以上（根据会话录制需求调整）
@@ -19,6 +19,8 @@
 ## 生产环境部署
 
 ### 1. 系统准备
+
+下面命令以 Debian/Ubuntu 为例；如果你使用 RHEL / CentOS Stream / Rocky / AlmaLinux / Fedora，请改用 `dnf` 或 `yum` 安装对应软件包，或直接执行 `./scripts/install_project.sh`。
 
 ```bash
 # 更新系统

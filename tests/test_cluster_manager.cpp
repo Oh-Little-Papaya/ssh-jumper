@@ -300,6 +300,17 @@ TEST(cluster_manager_load_invalid_tokens_file, "集群管理") {
     return true;
 }
 
+TEST(cluster_manager_admin_nonce_replay, "集群管理") {
+    ClusterManager manager;
+
+    ASSERT_FALSE(manager.validateAndRememberAdminNonce(""));
+    ASSERT_TRUE(manager.validateAndRememberAdminNonce("nonce-1"));
+    ASSERT_FALSE(manager.validateAndRememberAdminNonce("nonce-1"));
+    ASSERT_TRUE(manager.validateAndRememberAdminNonce("nonce-2"));
+
+    return true;
+}
+
 TEST(cluster_manager_token_file_with_comments, "集群管理") {
     ClusterManager manager;
     
@@ -691,8 +702,8 @@ TEST(cluster_manager_start_stop, "集群管理") {
 TEST(cluster_manager_initialize_with_address, "集群管理") {
     ClusterManager manager;
     
-    // 测试使用 IPv4 地址初始化
-    bool result = manager.initialize("127.0.0.1", 19999, nullptr);
+    // 使用 0 端口让系统自动分配，避免固定端口在 CI/并发环境冲突。
+    bool result = manager.initialize("127.0.0.1", 0, nullptr);
     ASSERT_TRUE(result);
     
     // 停止清理
@@ -720,5 +731,44 @@ TEST(cluster_manager_initialize_invalid_address, "集群管理") {
     bool result = manager.initialize("invalid-address-string", 19997, nullptr);
     ASSERT_FALSE(result);
     
+    return true;
+}
+
+TEST(cluster_manager_persists_configured_agents, "集群管理") {
+    const char* tokenFile = "/tmp/test_agent_tokens_persist.conf";
+    std::remove(tokenFile);
+
+    ClusterManager manager;
+    manager.setAgentTokenFilePath(tokenFile);
+
+    AgentTokenConfig config;
+    config.agentId = "persist-node";
+    config.token = "persist-token";
+    config.ipAddress = "10.20.30.40";
+    config.hostname = "persist-host";
+
+    ServiceInfo service;
+    service.name = "ssh";
+    service.type = "ssh";
+    service.port = 22;
+    config.services.push_back(service);
+
+    ASSERT_TRUE(manager.upsertConfiguredAgent(config));
+
+    ClusterManager reloaded;
+    ASSERT_TRUE(reloaded.loadAgentTokens(tokenFile));
+    auto loaded = reloaded.getConfiguredAgent("persist-node");
+    ASSERT_TRUE(loaded.has_value());
+    ASSERT_EQ(std::string("10.20.30.40"), loaded->ipAddress);
+    ASSERT_EQ(std::string("persist-host"), loaded->hostname);
+    ASSERT_EQ(1, loaded->services.size());
+
+    ASSERT_TRUE(manager.deleteConfiguredAgent("persist-node"));
+
+    ClusterManager deleted;
+    ASSERT_TRUE(deleted.loadAgentTokens(tokenFile));
+    ASSERT_FALSE(deleted.getConfiguredAgent("persist-node").has_value());
+
+    std::remove(tokenFile);
     return true;
 }

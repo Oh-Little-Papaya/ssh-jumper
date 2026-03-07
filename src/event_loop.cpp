@@ -141,7 +141,7 @@ std::shared_ptr<IEventLoop> EventLoopFactory::create(Type type) {
         case Type::EPOLL:
             return std::make_shared<EpollEventLoop>();
         case Type::IO_URING:
-            // TODO: 实现 io_uring 支持
+            LOG_WARN("io_uring backend is not implemented yet, falling back to epoll");
             return std::make_shared<EpollEventLoop>();
         default:
             return std::make_shared<EpollEventLoop>();

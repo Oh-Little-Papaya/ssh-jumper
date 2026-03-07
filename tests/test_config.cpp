@@ -7,6 +7,7 @@
 #include "../include/config_manager.h"
 #include <fstream>
 #include <cstdio>
+#include <openssl/sha.h>
 
 using namespace sshjump;
 
@@ -98,7 +99,7 @@ TEST(config_default_values, "配置管理") {
     // 检查默认值
     ASSERT_EQ("0.0.0.0", config.getServerConfig().ssh.listenAddress);
     ASSERT_EQ(2222, config.getServerConfig().ssh.port);
-    ASSERT_EQ("publickey", config.getServerConfig().ssh.authMethods);
+    ASSERT_EQ("password,publickey", config.getServerConfig().ssh.authMethods);
     ASSERT_FALSE(config.getServerConfig().ssh.permitRootLogin);
     ASSERT_EQ(3, config.getServerConfig().ssh.maxAuthTries);
     ASSERT_EQ(300, config.getServerConfig().ssh.idleTimeout);
@@ -417,6 +418,71 @@ TEST(config_user_auth_publickey, "配置管理") {
     return true;
 }
 
+TEST(config_user_auth_sha256_fingerprint_format, "配置管理") {
+    const char* testFile = "/tmp/test_config_pubkey_sha256.conf";
+    const char* userFile = "/tmp/test_users_pubkey_sha256.conf";
+
+    std::ofstream configFile(testFile);
+    configFile << "[security]\n";
+    configFile << "users_file = " << userFile << "\n";
+    configFile.close();
+
+    std::ofstream ufile(userFile);
+    ufile << "admin = hash123:SHA256:abcDEF123456\n";
+    ufile.close();
+
+    ConfigManager config;
+    ASSERT_TRUE(config.loadFromFile(testFile));
+
+    const auto runtimeConfig = config.getServerConfig();
+    auto it = runtimeConfig.users.find("admin");
+    ASSERT_TRUE(it != runtimeConfig.users.end());
+    ASSERT_EQ("SHA256:abcDEF123456", it->second.publicKey);
+
+    ASSERT_TRUE(config.verifyUserPublicKey("admin", "SHA256:abcDEF123456"));
+    ASSERT_FALSE(config.verifyUserPublicKey("admin", "SHA256:other"));
+
+    std::remove(testFile);
+    std::remove(userFile);
+    return true;
+}
+
+TEST(config_user_auth_openssh_key_normalization, "配置管理") {
+    const char* testFile = "/tmp/test_config_pubkey_openssh.conf";
+    const char* userFile = "/tmp/test_users_pubkey_openssh.conf";
+
+    std::ofstream configFile(testFile);
+    configFile << "[security]\n";
+    configFile << "users_file = " << userFile << "\n";
+    configFile.close();
+
+    // "AQID" => bytes {0x01, 0x02, 0x03}
+    std::ofstream ufile(userFile);
+    ufile << "admin = hash123:ssh-rsa AQID\n";
+    ufile.close();
+
+    ConfigManager config;
+    ASSERT_TRUE(config.loadFromFile(testFile));
+
+    unsigned char blob[] = {0x01, 0x02, 0x03};
+    unsigned char digest[SHA256_DIGEST_LENGTH] = {0};
+    SHA256(blob, sizeof(blob), digest);
+
+    std::stringstream ss;
+    for (size_t i = 0; i < sizeof(digest); i++) {
+        ss << std::hex << std::setw(2) << std::setfill('0')
+           << static_cast<int>(digest[i]);
+    }
+    const std::string expectedFingerprint = ss.str();
+
+    ASSERT_TRUE(config.verifyUserPublicKey("admin", expectedFingerprint));
+    ASSERT_FALSE(config.verifyUserPublicKey("admin", "0000"));
+
+    std::remove(testFile);
+    std::remove(userFile);
+    return true;
+}
+
 TEST(config_default_admin_user, "配置管理") {
     const char* testFile = "/tmp/test_config_default_admin.conf";
     const char* userFile = "/tmp/test_users_nonexistent.conf";
@@ -572,5 +638,57 @@ TEST(config_verify_pbkdf2_invalid_iterations, "配置管理") {
     });
 
     ASSERT_FALSE(config.verifyUserPassword("badpbkdf2", "any-password"));
+    return true;
+}
+
+TEST(config_crud_persists_users_file, "配置管理") {
+    const char* userFile = "/tmp/test_users_persist.conf";
+    std::remove(userFile);
+
+    ConfigManager config;
+    config.updateServerConfig([&](ServerConfig& serverConfig) {
+        serverConfig.security.usersFile = userFile;
+        serverConfig.users.clear();
+    });
+
+    UserAuthInfo user;
+    user.username = "persisted";
+    user.passwordHash = "PBKDF2$100000$0011$2233";
+    user.publicKey = "SHA256:abc123";
+    user.mustChangePassword = true;
+    user.enabled = true;
+
+    ASSERT_TRUE(config.createUser(user));
+
+    ConfigManager reloaded;
+    ASSERT_TRUE(reloaded.loadUsers(userFile));
+    auto created = reloaded.getUser("persisted");
+    ASSERT_TRUE(created.has_value());
+    ASSERT_TRUE(created->mustChangePassword);
+    ASSERT_TRUE(created->enabled);
+    ASSERT_EQ(std::string("SHA256:abc123"), created->publicKey);
+
+    ASSERT_TRUE(config.updateUser("persisted", [](UserAuthInfo& current) {
+        current.enabled = false;
+        current.mustChangePassword = false;
+        current.publicKey.clear();
+        return true;
+    }));
+
+    ConfigManager updated;
+    ASSERT_TRUE(updated.loadUsers(userFile));
+    auto updatedUser = updated.getUser("persisted");
+    ASSERT_TRUE(updatedUser.has_value());
+    ASSERT_FALSE(updatedUser->enabled);
+    ASSERT_FALSE(updatedUser->mustChangePassword);
+    ASSERT_TRUE(updatedUser->publicKey.empty());
+
+    ASSERT_TRUE(config.deleteUser("persisted"));
+
+    ConfigManager deleted;
+    ASSERT_TRUE(deleted.loadUsers(userFile));
+    ASSERT_FALSE(deleted.getUser("persisted").has_value());
+
+    std::remove(userFile);
     return true;
 }

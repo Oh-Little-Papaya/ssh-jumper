@@ -25,6 +25,7 @@ struct TestConfig {
     int clusterPort = 28888;    // 测试用集群端口
     std::string serverBinary;
     std::string agentBinary;
+    std::string adminBinary;
     std::string clusterToken = "cluster-test-token";
     std::string adminToken = "admin-test-token";
     std::string adminUser = "admin";
@@ -34,6 +35,7 @@ struct TestConfig {
         workDir = "/tmp/ssh_jump_func_test";
         serverBinary = "../build/ssh_jump_server";
         agentBinary = "../build/ssh_jump_agent";
+        adminBinary = "../build/ssh_jump_cluster_admin_tool";
         sshPort = 15022;        // 使用高位端口避免冲突
         clusterPort = 15088;
     }
@@ -143,10 +145,11 @@ public:
         
         // 创建工作目录
         fs::create_directories(config_.workDir);
-        
+
         // 创建配置目录
         fs::create_directories(config_.workDir + "/etc");
         fs::create_directories(config_.workDir + "/log");
+        fs::create_directories(config_.workDir + "/run");
         
         // 创建主机密钥
         generateHostKey();
@@ -179,6 +182,9 @@ public:
             "--cluster-listen-address", "127.0.0.1",
             "--token", config_.clusterToken,
             "--admin-token", config_.adminToken,
+            "--users-file", config_.workDir + "/etc/users.conf",
+            "--agent-token-file", config_.workDir + "/etc/agent_tokens.conf",
+            "--pid-file", config_.workDir + "/run/ssh_jump.pid",
             "--user", config_.adminUser + ":" + config_.adminPassword
         };
         return serverProcess_.start(config_.serverBinary, args);
@@ -194,12 +200,22 @@ public:
     
     bool startAgent(const std::string& agentId, const std::string& token,
                     const std::string& hostname) {
+        std::string agentIp = "10.10.99.99";
+        if (agentId == "web-01") {
+            agentIp = "10.10.0.11";
+        } else if (agentId == "web-02") {
+            agentIp = "10.10.0.12";
+        } else if (agentId == "db-01") {
+            agentIp = "10.10.0.13";
+        }
+
         std::vector<std::string> args = {
             "-s", "127.0.0.1",
             "-p", std::to_string(config_.clusterPort),
             "-i", agentId,
             "-t", token,
-            "-n", hostname
+            "-n", hostname,
+            "-I", agentIp
         };
         return agentProcess_.start(config_.agentBinary, args);
     }
@@ -212,9 +228,14 @@ public:
         return agentProcess_.isRunning();
     }
 
-    void setBinaries(const std::string& serverBinary, const std::string& agentBinary) {
+    void setBinaries(const std::string& serverBinary,
+                     const std::string& agentBinary,
+                     const std::string& adminBinary = "") {
         config_.serverBinary = serverBinary;
         config_.agentBinary = agentBinary;
+        if (!adminBinary.empty()) {
+            config_.adminBinary = adminBinary;
+        }
     }
     
     std::string getWorkDir() const { return config_.workDir; }
@@ -225,6 +246,87 @@ public:
     int getAgentPid() const { return agentProcess_.getPid(); }
     const std::string& getServerBinary() const { return config_.serverBinary; }
     const std::string& getAgentBinary() const { return config_.agentBinary; }
+    const std::string& getAdminBinary() const { return config_.adminBinary; }
+
+    bool isNodeOnline(const std::string& agentId) {
+        std::string output;
+        int exitCode = -1;
+        if (!runAdminTool({"--server", "127.0.0.1",
+                           "--port", std::to_string(config_.clusterPort),
+                           "--admin-token", config_.adminToken,
+                           "--list-nodes"},
+                          output, exitCode) || exitCode != 0) {
+            return false;
+        }
+
+        std::stringstream ss(output);
+        std::string line;
+        while (std::getline(ss, line)) {
+            if (line.rfind(agentId + "\t", 0) == 0) {
+                return line.size() >= 4 && line.substr(line.size() - 3) == "yes";
+            }
+        }
+        return false;
+    }
+
+    bool runAdminTool(const std::vector<std::string>& args,
+                      std::string& output,
+                      int& exitCode) {
+        output.clear();
+        exitCode = -1;
+
+        if (!fs::exists(config_.adminBinary)) {
+            return false;
+        }
+
+        int pipeFds[2] = {-1, -1};
+        if (pipe(pipeFds) != 0) {
+            return false;
+        }
+
+        pid_t pid = fork();
+        if (pid < 0) {
+            close(pipeFds[0]);
+            close(pipeFds[1]);
+            return false;
+        }
+
+        if (pid == 0) {
+            dup2(pipeFds[1], STDOUT_FILENO);
+            dup2(pipeFds[1], STDERR_FILENO);
+            close(pipeFds[0]);
+            close(pipeFds[1]);
+
+            std::vector<char*> argv;
+            argv.push_back(const_cast<char*>(config_.adminBinary.c_str()));
+            for (const auto& arg : args) {
+                argv.push_back(const_cast<char*>(arg.c_str()));
+            }
+            argv.push_back(nullptr);
+            execv(config_.adminBinary.c_str(), argv.data());
+            _exit(127);
+        }
+
+        close(pipeFds[1]);
+
+        char buffer[1024];
+        ssize_t n = 0;
+        while ((n = read(pipeFds[0], buffer, sizeof(buffer))) > 0) {
+            output.append(buffer, static_cast<size_t>(n));
+        }
+        close(pipeFds[0]);
+
+        int status = 0;
+        if (waitpid(pid, &status, 0) == pid) {
+            if (WIFEXITED(status)) {
+                exitCode = WEXITSTATUS(status);
+            } else if (WIFSIGNALED(status)) {
+                exitCode = 128 + WTERMSIG(status);
+            }
+        }
+
+        return true;
+    }
     
 private:
     void generateHostKey() {

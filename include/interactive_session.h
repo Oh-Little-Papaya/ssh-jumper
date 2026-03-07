@@ -213,7 +213,13 @@ private:
     
     // 获取最近访问列表
     std::vector<RecentAsset> getRecentAssets(int limit = 5);
-    
+
+    // 从磁盘加载/保存最近访问
+    void loadRecentAssets();
+    void saveRecentAssets();
+    std::string getRecentAssetsFilePath() const;
+    std::optional<AssetInfo> resolveRecentAsset(size_t index) const;
+
     // 显示空资产菜单 (没有可访问资产时的菜单)
     void showEmptyAssetMenu();
     
@@ -250,6 +256,9 @@ private:
     
     // 运行标志
     std::atomic<bool> running_;
+
+    // 当前菜单页码（从 0 开始）
+    int currentPage_{0};
     
     // 最近访问列表 (持久化到文件)
     std::vector<RecentAsset> recentAssets_;

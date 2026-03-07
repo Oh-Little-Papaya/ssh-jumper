@@ -15,10 +15,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <filesystem>
 #include <iomanip>
 #include <nlohmann/json.hpp>
+#include <sys/stat.h>
 
 #include "config_manager.h"
+#include "password_utils.h"
 #include "thread_pool.h"
 
 #ifdef SSHJUMP_USE_FOLLY
@@ -26,6 +30,8 @@
 #endif
 
 namespace sshjump {
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -36,30 +42,6 @@ constexpr int kDefaultReverseTunnelPortEnd = 38199;
 constexpr int kDefaultReverseTunnelRetries = 3;
 constexpr int kSendTimeoutMs = 5000;
 constexpr uint32_t kMaxAgentMessageSize = 10 * 1024 * 1024;
-constexpr int kPbkdf2Iterations = 100000;
-constexpr int kPbkdf2SaltLength = 32;
-constexpr int kPbkdf2HashLength = 64;
-
-std::string hashPasswordPbkdf2(const std::string& password) {
-  std::vector<unsigned char> salt(kPbkdf2SaltLength, 0);
-  if (RAND_bytes(salt.data(), static_cast<int>(salt.size())) != 1) {
-    return "";
-  }
-
-  unsigned char hash[kPbkdf2HashLength] = {0};
-  const int ret = PKCS5_PBKDF2_HMAC(
-      password.c_str(), static_cast<int>(password.size()), salt.data(),
-      static_cast<int>(salt.size()), kPbkdf2Iterations, EVP_sha512(),
-      kPbkdf2HashLength, hash);
-  if (ret != 1) {
-    return "";
-  }
-
-  return "PBKDF2$" + std::to_string(kPbkdf2Iterations) + "$" +
-         bytesToHex(salt.data(), salt.size()) + "$" +
-         bytesToHex(hash, sizeof(hash));
-}
-
 bool isWildcardAddress(const std::string& address) {
   return address.empty() || address == "0.0.0.0" || address == "::";
 }
@@ -749,6 +731,16 @@ void AgentConnection::handleCommand(const std::string& payload) {
     }
   }
 
+  const std::string nonce = trimString(req.value("nonce", ""));
+  if (nonce.empty()) {
+    sendResponse(false, "Missing nonce");
+    return;
+  }
+  if (!manager_ || !manager_->validateAndRememberAdminNonce(nonce, 600)) {
+    sendResponse(false, "Replay detected");
+    return;
+  }
+
   const std::string op = trimString(req.value("op", ""));
   if (op.empty()) {
     sendResponse(false, "Missing op");
@@ -838,7 +830,7 @@ void AgentConnection::handleCommand(const std::string& payload) {
       UserAuthInfo user;
       user.username = username;
       user.passwordHash =
-          passwordHash.empty() ? hashPasswordPbkdf2(password) : passwordHash;
+          passwordHash.empty() ? security::hashPasswordPbkdf2(password) : passwordHash;
       user.publicKey = trimString(req.value("publicKey", ""));
       user.mustChangePassword = req.value("mustChangePassword", false);
       user.enabled = req.value("enabled", true);
@@ -871,7 +863,7 @@ void AgentConnection::handleCommand(const std::string& payload) {
               if (password.empty()) {
                 return false;
               }
-              user.passwordHash = hashPasswordPbkdf2(password);
+              user.passwordHash = security::hashPasswordPbkdf2(password);
               if (user.passwordHash.empty()) {
                 return false;
               }
@@ -1209,15 +1201,45 @@ void ClusterManager::stop() {
 
   if (timerThread_) {
     timerThread_->stop();
+    timerThread_.reset();
   }
 
-  closeSocket(listenFd_);
+  int listenFd = -1;
+  std::vector<std::shared_ptr<AgentConnection>> connectionsToClose;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    listenFd = listenFd_;
+    listenFd_ = -1;
+    connectionsToClose.reserve(pendingConnections_.size() +
+                               agentConnections_.size());
+    for (const auto& pair : pendingConnections_) {
+      if (pair.second) {
+        connectionsToClose.push_back(pair.second);
+      }
+    }
+    for (const auto& pair : agentConnections_) {
+      if (pair.second) {
+        connectionsToClose.push_back(pair.second);
+      }
+    }
+    pendingConnections_.clear();
+    agentConnections_.clear();
+    hostnameToAgentId_.clear();
+    agents_.clear();
+    adminNonces_.clear();
+  }
 
-  // 关闭所有 Agent 连接
-  std::lock_guard<std::mutex> lock(mutex_);
-  pendingConnections_.clear();
-  agentConnections_.clear();
-  agents_.clear();
+  if (eventLoop_ && listenFd >= 0) {
+    eventLoop_->removeHandler(listenFd);
+  }
+  closeSocket(listenFd);
+
+  // 在锁外关闭连接，避免析构回调再次进入 mutex_ 造成死锁。
+  for (auto& conn : connectionsToClose) {
+    if (conn) {
+      conn->close();
+    }
+  }
 
   LOG_INFO("ClusterManager stopped");
 }
@@ -1529,13 +1551,121 @@ std::optional<AgentTokenConfig> ClusterManager::getConfiguredAgent(
   return it->second;
 }
 
+bool ClusterManager::saveAgentTokensToFile(
+    const std::string& path,
+    const std::unordered_map<std::string, std::string>& simpleTokens,
+    const std::unordered_map<std::string, AgentTokenConfig>& agentConfigs) {
+  if (path.empty()) {
+    return true;
+  }
+
+  std::error_code ec;
+  const fs::path filePath(path);
+  const fs::path parentPath = filePath.parent_path();
+  if (!parentPath.empty()) {
+    fs::create_directories(parentPath, ec);
+    if (ec) {
+      LOG_ERROR("Failed to create agent token directory: " +
+                parentPath.string() + ", err=" + ec.message());
+      return false;
+    }
+  }
+
+  std::vector<std::pair<std::string, std::string>> sortedSimpleTokens(
+      simpleTokens.begin(), simpleTokens.end());
+  std::sort(sortedSimpleTokens.begin(), sortedSimpleTokens.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+  std::vector<AgentTokenConfig> sortedConfigs;
+  sortedConfigs.reserve(agentConfigs.size());
+  for (const auto& pair : agentConfigs) {
+    sortedConfigs.push_back(pair.second);
+  }
+  std::sort(sortedConfigs.begin(), sortedConfigs.end(),
+            [](const AgentTokenConfig& a, const AgentTokenConfig& b) {
+              return a.agentId < b.agentId;
+            });
+
+  const fs::path tempPath =
+      filePath.string() + ".tmp." + std::to_string(::getpid());
+  std::ofstream file(tempPath, std::ios::out | std::ios::trunc);
+  if (!file.is_open()) {
+    LOG_ERROR("Failed to open agent token file for write: " +
+              tempPath.string());
+    return false;
+  }
+
+  file << "# SSH Jump agent tokens\n";
+  file << "# Simple format: agent_id = token\n";
+  file << "# Full format: [agent:<id>] with token/ip/hostname/service\n\n";
+
+  for (const auto& item : sortedSimpleTokens) {
+    if (agentConfigs.find(item.first) != agentConfigs.end()) {
+      continue;
+    }
+    file << item.first << " = " << item.second << "\n";
+  }
+
+  if (!sortedSimpleTokens.empty() && !sortedConfigs.empty()) {
+    file << "\n";
+  }
+
+  for (const auto& config : sortedConfigs) {
+    file << "[agent:" << config.agentId << "]\n";
+    file << "token = " << config.token << "\n";
+    file << "ip = " << config.ipAddress << "\n";
+    if (!config.hostname.empty()) {
+      file << "hostname = " << config.hostname << "\n";
+    }
+    for (const auto& service : config.services) {
+      file << "service = " << service.name << ":" << service.type << ":"
+           << service.port;
+      if (!service.description.empty()) {
+        file << ":" << service.description;
+      }
+      file << "\n";
+    }
+    file << "\n";
+  }
+  file.close();
+
+  if (!file) {
+    fs::remove(tempPath, ec);
+    LOG_ERROR("Failed to flush agent token file: " + tempPath.string());
+    return false;
+  }
+
+  chmod(tempPath.c_str(), 0600);
+  if (::rename(tempPath.c_str(), path.c_str()) != 0) {
+    const std::string error = std::strerror(errno);
+    fs::remove(tempPath, ec);
+    LOG_ERROR("Failed to replace agent token file: " + path +
+              ", err=" + error);
+    return false;
+  }
+  chmod(path.c_str(), 0600);
+  return true;
+}
+
+bool ClusterManager::persistAgentTokensLocked() {
+  return saveAgentTokensToFile(agentTokenFilePath_, agentTokens_, agentConfigs_);
+}
+
 bool ClusterManager::upsertConfiguredAgent(const AgentTokenConfig& config) {
   if (!config.isValid()) {
     return false;
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto oldConfigs = agentConfigs_;
+  const auto oldTokens = agentTokens_;
   agentConfigs_[config.agentId] = config;
+  agentTokens_.erase(config.agentId);
+  if (!persistAgentTokensLocked()) {
+    agentConfigs_ = oldConfigs;
+    agentTokens_ = oldTokens;
+    return false;
+  }
   return true;
 }
 
@@ -1548,14 +1678,25 @@ bool ClusterManager::deleteConfiguredAgent(const std::string& agentId) {
   bool removed = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    const auto oldConfigs = agentConfigs_;
+    const auto oldTokens = agentTokens_;
     removed = (agentConfigs_.erase(agentId) > 0) || removed;
     removed = (agentTokens_.erase(agentId) > 0) || removed;
+
+    if (!removed) {
+      return false;
+    }
+
+    if (!persistAgentTokensLocked()) {
+      agentConfigs_ = oldConfigs;
+      agentTokens_ = oldTokens;
+      return false;
+    }
 
     auto connIt = agentConnections_.find(agentId);
     if (connIt != agentConnections_.end()) {
       connToClose = connIt->second;
       agentConnections_.erase(connIt);
-      removed = true;
     }
 
     auto agentIt = agents_.find(agentId);
@@ -1567,7 +1708,6 @@ bool ClusterManager::deleteConfiguredAgent(const std::string& agentId) {
         }
       }
       agents_.erase(agentIt);
-      removed = true;
     }
   }
 
@@ -1786,8 +1926,19 @@ void ClusterManager::removeConnectionByFd(int fd) {
     return;
   }
 
+  if (eventLoop_) {
+    eventLoop_->removeHandler(fd);
+  }
+
   std::lock_guard<std::mutex> lock(mutex_);
   pendingConnections_.erase(fd);
+  for (auto it = agentConnections_.begin(); it != agentConnections_.end();) {
+    if (!it->second || it->second->getFd() == fd) {
+      it = agentConnections_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void ClusterManager::setConnectionWriteInterest(int fd, bool enabled) {
@@ -1803,6 +1954,14 @@ void ClusterManager::setConnectionWriteInterest(int fd, bool enabled) {
 }
 
 bool ClusterManager::loadAgentTokens(const std::string& configPath) {
+  std::unordered_map<std::string, AgentTokenConfig> loadedConfigs;
+  std::unordered_map<std::string, std::string> loadedTokens;
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    agentTokenFilePath_ = configPath;
+  }
+
   std::ifstream file(configPath);
   if (!file.is_open()) {
     LOG_WARN("Failed to open agent tokens file: " + configPath);
@@ -1826,7 +1985,7 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
     if (line[0] == '[' && line[line.size() - 1] == ']') {
       // 保存上一个配置
       if (inAgentSection && currentConfig.isValid()) {
-        agentConfigs_[currentConfig.agentId] = currentConfig;
+        loadedConfigs[currentConfig.agentId] = currentConfig;
         LOG_DEBUG("Loaded agent config: " + currentConfig.agentId +
                   " (IP: " + currentConfig.ipAddress + ")");
       }
@@ -1878,7 +2037,7 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
         std::string agentId = trimString(line.substr(0, pos));
         std::string token = trimString(line.substr(pos + 1));
         if (!agentId.empty() && !token.empty()) {
-          agentTokens_[agentId] = token;
+          loadedTokens[agentId] = token;
         }
       }
     }
@@ -1886,7 +2045,13 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
 
   // 保存最后一个配置
   if (inAgentSection && currentConfig.isValid()) {
-    agentConfigs_[currentConfig.agentId] = currentConfig;
+    loadedConfigs[currentConfig.agentId] = currentConfig;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    agentConfigs_ = std::move(loadedConfigs);
+    agentTokens_ = std::move(loadedTokens);
   }
 
   size_t totalConfigs = agentConfigs_.size() + agentTokens_.size();
@@ -1903,6 +2068,11 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
   return true;
 }
 
+void ClusterManager::setAgentTokenFilePath(const std::string& path) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  agentTokenFilePath_ = path;
+}
+
 void ClusterManager::upsertAgentToken(const std::string& agentId,
                                       const std::string& token) {
   if (agentId.empty() || token.empty()) {
@@ -1910,7 +2080,11 @@ void ClusterManager::upsertAgentToken(const std::string& agentId,
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
+  const auto oldTokens = agentTokens_;
   agentTokens_[agentId] = token;
+  if (!persistAgentTokensLocked()) {
+    agentTokens_ = oldTokens;
+  }
 }
 
 void ClusterManager::setSharedToken(const std::string& token) {
@@ -1921,37 +2095,80 @@ void ClusterManager::setSharedToken(const std::string& token) {
 void ClusterManager::setAdminToken(const std::string& token) {
   std::lock_guard<std::mutex> lock(mutex_);
   adminToken_ = token;
+  adminNonces_.clear();
 }
 
-void ClusterManager::checkAgentHealth() {
+bool ClusterManager::validateAndRememberAdminNonce(const std::string& nonce,
+                                                   int ttlSeconds) {
+  const std::string trimmedNonce = trimString(nonce);
+  if (trimmedNonce.empty()) {
+    return false;
+  }
+
+  const int effectiveTtl = std::max(60, ttlSeconds);
+  const auto now = std::chrono::steady_clock::now();
+  const auto expireBefore = now - std::chrono::seconds(effectiveTtl);
+
   std::lock_guard<std::mutex> lock(mutex_);
 
-  auto now = std::chrono::steady_clock::now();
-  std::vector<std::string> toRemove;
-
-  for (const auto& pair : agents_) {
-    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                       now - pair.second->lastHeartbeat)
-                       .count();
-
-    if (elapsed > 90) {  // 90秒超时
-      LOG_WARN("Agent heartbeat timeout: " + pair.first);
-      toRemove.push_back(pair.first);
+  for (auto it = adminNonces_.begin(); it != adminNonces_.end();) {
+    if (it->second < expireBefore) {
+      it = adminNonces_.erase(it);
+    } else {
+      ++it;
     }
   }
 
-  for (const auto& agentId : toRemove) {
-    // 先清理 hostname 到 agentId 的映射
-    auto it = agents_.find(agentId);
-    if (it != agents_.end() && it->second) {
-      if (it->second->controlFd >= 0) {
-        pendingConnections_.erase(it->second->controlFd);
+  if (adminNonces_.find(trimmedNonce) != adminNonces_.end()) {
+    return false;
+  }
+
+  adminNonces_[trimmedNonce] = now;
+  return true;
+}
+
+void ClusterManager::checkAgentHealth() {
+  std::vector<std::shared_ptr<AgentConnection>> connectionsToClose;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto now = std::chrono::steady_clock::now();
+    std::vector<std::string> toRemove;
+
+    for (const auto& pair : agents_) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                         now - pair.second->lastHeartbeat)
+                         .count();
+
+      if (elapsed > 90) {  // 90秒超时
+        LOG_WARN("Agent heartbeat timeout: " + pair.first);
+        toRemove.push_back(pair.first);
       }
-      hostnameToAgentId_.erase(it->second->hostname);
     }
-    agentConnections_.erase(agentId);
-    agents_.erase(agentId);
-    LOG_INFO("Agent removed due to timeout: " + agentId);
+
+    for (const auto& agentId : toRemove) {
+      // 先清理 hostname 到 agentId 的映射
+      auto it = agents_.find(agentId);
+      if (it != agents_.end() && it->second) {
+        if (it->second->controlFd >= 0) {
+          pendingConnections_.erase(it->second->controlFd);
+        }
+        hostnameToAgentId_.erase(it->second->hostname);
+      }
+      auto connIt = agentConnections_.find(agentId);
+      if (connIt != agentConnections_.end() && connIt->second) {
+        connectionsToClose.push_back(connIt->second);
+      }
+      agentConnections_.erase(agentId);
+      agents_.erase(agentId);
+      LOG_INFO("Agent removed due to timeout: " + agentId);
+    }
+  }
+
+  for (auto& conn : connectionsToClose) {
+    if (conn) {
+      conn->close();
+    }
   }
 }
 

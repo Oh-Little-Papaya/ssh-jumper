@@ -293,8 +293,19 @@ public:
 
     // 设置管理 API token（admin 专用）
     void setAdminToken(const std::string& token);
+
+    // 校验并登记管理请求 nonce（防重放）
+    bool validateAndRememberAdminNonce(const std::string& nonce,
+                                       int ttlSeconds = 600);
+
+    void setAgentTokenFilePath(const std::string& path);
     
 private:
+    bool persistAgentTokensLocked();
+    static bool saveAgentTokensToFile(const std::string& path,
+                                      const std::unordered_map<std::string, std::string>& simpleTokens,
+                                      const std::unordered_map<std::string, AgentTokenConfig>& agentConfigs);
+
     // 启动心跳检查
     void startHeartbeatCheck();
     
@@ -326,6 +337,9 @@ private:
     // Agent token映射 (agentId -> token) - 简单格式
     std::unordered_map<std::string, std::string> agentTokens_;
 
+    // Agent token 配置文件路径
+    std::string agentTokenFilePath_;
+
     // 集群共享 token（所有 Agent 共用）
     std::string sharedToken_;
 
@@ -334,6 +348,9 @@ private:
     
     // Agent 预配置映射 (agentId -> 完整配置) - 完整格式
     std::unordered_map<std::string, AgentTokenConfig> agentConfigs_;
+
+    // 管理请求 nonce 去重（nonce -> 首次出现时间）
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> adminNonces_;
     
     // 主机名到Agent ID映射
     std::unordered_map<std::string, std::string> hostnameToAgentId_;

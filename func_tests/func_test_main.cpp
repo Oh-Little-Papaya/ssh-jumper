@@ -41,6 +41,7 @@ int main(int argc, char* argv[]) {
 
     const char* envServer = std::getenv("SSHJUMP_TEST_SERVER_BINARY");
     const char* envAgent = std::getenv("SSHJUMP_TEST_AGENT_BINARY");
+    const char* envAdmin = std::getenv("SSHJUMP_TEST_ADMIN_BINARY");
 
     std::string serverBinary = resolveBinaryPath({
         envServer ? fs::path(envServer) : fs::path(),
@@ -54,6 +55,12 @@ int main(int argc, char* argv[]) {
         fs::current_path() / "ssh_jump_agent",
         "../build/ssh_jump_agent"
     });
+    std::string adminBinary = resolveBinaryPath({
+        envAdmin ? fs::path(envAdmin) : fs::path(),
+        exeDir / "ssh_jump_cluster_admin_tool",
+        fs::current_path() / "ssh_jump_cluster_admin_tool",
+        "../build/ssh_jump_cluster_admin_tool"
+    });
 
     if (serverBinary.empty()) {
         std::cerr << "错误: 找不到服务器二进制文件 ssh_jump_server\n";
@@ -65,8 +72,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "请先编译项目: cmake --build <build-dir> -j$(nproc)\n";
         return 1;
     }
+    if (adminBinary.empty()) {
+        std::cerr << "错误: 找不到管理工具二进制文件 ssh_jump_cluster_admin_tool\n";
+        std::cerr << "请先编译项目: cmake --build <build-dir> -j$(nproc)\n";
+        return 1;
+    }
 
-    func_test::g_testEnv.setBinaries(serverBinary, agentBinary);
+    func_test::g_testEnv.setBinaries(serverBinary, agentBinary, adminBinary);
     
     int result = runAllFuncTests(filter);
     

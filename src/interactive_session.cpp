@@ -13,13 +13,67 @@
 #include "asset_manager.h"
 #include "ssh_server.h"
 #include "config_manager.h"
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <sys/stat.h>
+
+#include <nlohmann/json.hpp>
 
 namespace sshjump {
+
+namespace {
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+std::string sanitizeRecentAssetFileComponent(const std::string& value) {
+    std::string sanitized;
+    sanitized.reserve(value.size());
+    for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') {
+            sanitized.push_back(ch);
+        } else {
+            sanitized.push_back('_');
+        }
+    }
+    return sanitized.empty() ? "anonymous" : sanitized;
+}
+
+std::string getServerKeyFingerprintHex(ssh_session session) {
+    if (!session) {
+        return "";
+    }
+
+    ssh_key serverKey = nullptr;
+    unsigned char* hash = nullptr;
+    size_t hashLen = 0;
+    std::string fingerprint;
+
+    if (ssh_get_server_publickey(session, &serverKey) == SSH_OK && serverKey) {
+        if (ssh_get_publickey_hash(serverKey, SSH_PUBLICKEY_HASH_SHA256,
+                                   &hash, &hashLen) == SSH_OK &&
+            hash && hashLen > 0) {
+            fingerprint = bytesToHex(hash, hashLen);
+        }
+    }
+
+    if (hash) {
+        ssh_clean_pubkey_hash(&hash);
+    }
+    if (serverKey) {
+        ssh_key_free(serverKey);
+    }
+
+    return fingerprint;
+}
+
+} // namespace
 
 // ============================================
 // SSHClient 实现
@@ -120,6 +174,37 @@ bool SSHClient::connectWithSocket(int connectedSockFd,
     int ret = ssh_connect(session_);
     if (ret != SSH_OK) {
         LOG_ERROR("SSH handshake failed: " + std::string(ssh_get_error(session_)));
+        disconnect();
+        return false;
+    }
+
+    // 严格校验目标主机密钥，防止 MITM。
+    const int knownHostState = ssh_session_is_known_server(session_);
+    if (knownHostState != SSH_KNOWN_HOSTS_OK) {
+        const std::string fingerprint = getServerKeyFingerprintHex(session_);
+        std::string reason;
+        switch (knownHostState) {
+            case SSH_KNOWN_HOSTS_CHANGED:
+                reason = "host key changed";
+                break;
+            case SSH_KNOWN_HOSTS_OTHER:
+                reason = "host key type mismatch";
+                break;
+            case SSH_KNOWN_HOSTS_NOT_FOUND:
+                reason = "known_hosts file not found";
+                break;
+            case SSH_KNOWN_HOSTS_UNKNOWN:
+                reason = "host key unknown";
+                break;
+            case SSH_KNOWN_HOSTS_ERROR:
+            default:
+                reason = "known_hosts verification error";
+                break;
+        }
+        LOG_ERROR("Host key verification failed for " + host + ":" +
+                  std::to_string(port) + " (" + reason + ")" +
+                  (fingerprint.empty() ? std::string()
+                                       : ", sha256_hex=" + fingerprint));
         disconnect();
         return false;
     }
@@ -428,7 +513,8 @@ InteractiveSession::InteractiveSession(std::shared_ptr<SSHConnection> connection
     : connection_(connection)
     , server_(server)
     , state_(SessionState::INITIAL)
-    , running_(false) {
+    , running_(false)
+    , currentPage_(0) {
 }
 
 InteractiveSession::~InteractiveSession() {
@@ -455,7 +541,7 @@ void InteractiveSession::start() {
     }
     
     // 加载最近访问记录
-    recentAssets_ = getRecentAssets();
+    loadRecentAssets();
     
     // 尝试直接连接 (命令行参数或环境变量指定)
     if (tryDirectConnect()) {
@@ -464,6 +550,7 @@ void InteractiveSession::start() {
     
     // 进入交互式菜单模式
     state_ = SessionState::MENU;
+    currentPage_ = 0;
     clearScreen();
     showWelcome();
     
@@ -476,7 +563,6 @@ void InteractiveSession::start() {
             showEmptyAssetMenu();
 
             // 读取用户输入
-            sendToUser("\r\n\033[32m> \033[0m");
             std::string input = readUserInput();
 
             // 处理空资产菜单的用户输入
@@ -492,11 +578,19 @@ void InteractiveSession::start() {
             continue;
         }
 
+        const int totalPages = std::max(1, static_cast<int>(
+            (assets.size() + ASSETS_PER_PAGE - 1) / ASSETS_PER_PAGE));
+        if (currentPage_ >= totalPages) {
+            currentPage_ = totalPages - 1;
+        }
+        if (currentPage_ < 0) {
+            currentPage_ = 0;
+        }
+
         // 显示资产菜单
-        showAssetMenu(assets);
+        showAssetMenu(assets, currentPage_);
         
         // 读取用户输入
-        sendToUser("\r\n\033[32m> \033[0m");
         std::string input = readUserInput();
         
         if (!handleUserSelection(input, assets)) {
@@ -511,7 +605,7 @@ void InteractiveSession::start() {
     }
     
     // 保存最近访问记录
-    // TODO: 持久化到文件
+    saveRecentAssets();
     
     // 发送退出消息
     sendToUser("\r\n\033[90m已退出。\033[0m\r\n");
@@ -761,6 +855,24 @@ bool InteractiveSession::handleUserSelection(const std::string& input,
         assetManager_->refreshAssets();
         return true;
     }
+
+    if (input == "n" || input == "next") {
+        if (!assets.empty()) {
+            const int totalPages = std::max(1, static_cast<int>(
+                (assets.size() + ASSETS_PER_PAGE - 1) / ASSETS_PER_PAGE));
+            if (currentPage_ < totalPages - 1) {
+                currentPage_++;
+            }
+        }
+        return true;
+    }
+
+    if (input == "p" || input == "prev") {
+        if (currentPage_ > 0) {
+            currentPage_--;
+        }
+        return true;
+    }
     
     if (input == "h" || input == "help" || input == "?") {
         clearScreen();
@@ -780,11 +892,24 @@ bool InteractiveSession::handleUserSelection(const std::string& input,
     } else {
         // 多个匹配，显示列表让用户选择
         sendToUser("\r\n找到多个匹配项:\r\n");
-        for (size_t i = 0; i < matches.size() && i < 10; i++) {
+        const size_t displayCount = std::min<size_t>(10, matches.size());
+        for (size_t i = 0; i < displayCount; i++) {
             sendToUser("  " + std::to_string(i + 1) + ". " + matches[i].hostname + 
                       " (" + matches[i].ipAddress + ")\r\n");
         }
-        sendToUser("\r\n请输入序号选择: ");
+        sendToUser("\r\n请输入序号选择 (1-" + std::to_string(displayCount) + ", 回车取消): ");
+        const std::string choice = readUserInput();
+        if (choice.empty() || choice == "^C") {
+            return true;
+        }
+
+        try {
+            const int idx = std::stoi(choice);
+            if (idx >= 1 && idx <= static_cast<int>(displayCount)) {
+                return connectToAsset(matches[static_cast<size_t>(idx - 1)]);
+            }
+        } catch (...) {
+        }
         return false;
     }
 }
@@ -797,8 +922,8 @@ std::vector<AssetInfo> InteractiveSession::parseUserInput(const std::string& inp
     if (!input.empty() && input[0] == '@') {
         try {
             int idx = std::stoi(input.substr(1)) - 1;
-            if (idx >= 0 && idx < static_cast<int>(recentAssets_.size())) {
-                auto asset = assetManager_->getAssetById(recentAssets_[idx].assetId);
+            if (idx >= 0) {
+                auto asset = resolveRecentAsset(static_cast<size_t>(idx));
                 if (asset) {
                     matches.push_back(*asset);
                 }
@@ -1010,29 +1135,42 @@ void InteractiveSession::sendToUser(const std::string& data) {
 }
 
 void InteractiveSession::recordRecentAccess(const std::string& assetId, const std::string& hostname) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    bool updated = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto now = std::chrono::system_clock::now();
 
-    // 检查是否已存在
-    for (auto& recent : recentAssets_) {
-        if (recent.assetId == assetId) {
-            recent.lastAccess = std::chrono::system_clock::now();
-            recent.accessCount++;
-            return;
+        for (auto it = recentAssets_.begin(); it != recentAssets_.end(); ++it) {
+            if (it->assetId == assetId) {
+                RecentAsset recent = *it;
+                recent.hostname = hostname;
+                recent.lastAccess = now;
+                recent.accessCount++;
+                recentAssets_.erase(it);
+                recentAssets_.insert(recentAssets_.begin(), recent);
+                if (recentAssets_.size() > 10) {
+                    recentAssets_.resize(10);
+                }
+                updated = true;
+                break;
+            }
+        }
+
+        if (!updated) {
+            RecentAsset recent;
+            recent.assetId = assetId;
+            recent.hostname = hostname;
+            recent.lastAccess = now;
+            recent.accessCount = 1;
+            recentAssets_.insert(recentAssets_.begin(), recent);
+
+            if (recentAssets_.size() > 10) {
+                recentAssets_.resize(10);
+            }
         }
     }
-    
-    // 添加新记录
-    RecentAsset recent;
-    recent.assetId = assetId;
-    recent.hostname = hostname;
-    recent.lastAccess = std::chrono::system_clock::now();
-    recent.accessCount = 1;
-    recentAssets_.insert(recentAssets_.begin(), recent);
-    
-    // 只保留最近 10 条
-    if (recentAssets_.size() > 10) {
-        recentAssets_.resize(10);
-    }
+
+    saveRecentAssets();
 }
 
 std::vector<RecentAsset> InteractiveSession::getRecentAssets(int limit) {
@@ -1043,6 +1181,166 @@ std::vector<RecentAsset> InteractiveSession::getRecentAssets(int limit) {
     std::lock_guard<std::mutex> lock(mutex_);
     const size_t count = std::min(static_cast<size_t>(limit), recentAssets_.size());
     return std::vector<RecentAsset>(recentAssets_.begin(), recentAssets_.begin() + count);
+}
+
+std::string InteractiveSession::getRecentAssetsFilePath() const {
+    const auto config = ConfigManager::getInstance().getServerConfig();
+    std::vector<fs::path> candidateBases;
+
+    if (const char* stateDir = std::getenv("SSHJUMP_STATE_DIR");
+        stateDir && stateDir[0] != '\0') {
+        candidateBases.emplace_back(stateDir);
+    }
+    if (!config.logging.sessionPath.empty()) {
+        candidateBases.emplace_back(config.logging.sessionPath);
+    }
+    if (const char* xdgStateHome = std::getenv("XDG_STATE_HOME");
+        xdgStateHome && xdgStateHome[0] != '\0') {
+        candidateBases.emplace_back(fs::path(xdgStateHome) / "ssh_jump");
+    }
+    if (const char* home = std::getenv("HOME"); home && home[0] != '\0') {
+        candidateBases.emplace_back(fs::path(home) / ".local" / "state" / "ssh_jump");
+    }
+    candidateBases.emplace_back(fs::temp_directory_path() / "ssh_jump_state");
+
+    const std::string fileName = sanitizeRecentAssetFileComponent(username_) + ".json";
+    std::error_code ec;
+    for (const auto& base : candidateBases) {
+        const fs::path recentDir = base / "recent";
+        fs::create_directories(recentDir, ec);
+        if (!ec) {
+            return (recentDir / fileName).string();
+        }
+        ec.clear();
+    }
+
+    return (fs::temp_directory_path() / "ssh_jump_state" / "recent" / fileName).string();
+}
+
+void InteractiveSession::loadRecentAssets() {
+    const std::string filePath = getRecentAssetsFilePath();
+    if (filePath.empty()) {
+        return;
+    }
+
+    std::ifstream file(filePath);
+    if (!file.is_open()) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        recentAssets_.clear();
+        return;
+    }
+
+    json payload;
+    try {
+        file >> payload;
+    } catch (...) {
+        LOG_WARN("Failed to parse recent assets file: " + filePath);
+        return;
+    }
+
+    if (!payload.is_array()) {
+        return;
+    }
+
+    std::vector<RecentAsset> loaded;
+    for (const auto& item : payload) {
+        if (!item.is_object()) {
+            continue;
+        }
+
+        RecentAsset recent;
+        recent.assetId = trimString(item.value("assetId", ""));
+        recent.hostname = trimString(item.value("hostname", ""));
+        recent.accessCount = std::max(0, item.value("accessCount", 0));
+        const auto lastAccessSeconds = item.value("lastAccessEpochSeconds", int64_t{0});
+        if (recent.assetId.empty() || recent.hostname.empty() || lastAccessSeconds <= 0) {
+            continue;
+        }
+        recent.lastAccess = std::chrono::system_clock::time_point{std::chrono::seconds(lastAccessSeconds)};
+        loaded.push_back(recent);
+    }
+
+    std::sort(loaded.begin(), loaded.end(), [](const RecentAsset& a, const RecentAsset& b) {
+        return a.lastAccess > b.lastAccess;
+    });
+    if (loaded.size() > 10) {
+        loaded.resize(10);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    recentAssets_ = std::move(loaded);
+}
+
+void InteractiveSession::saveRecentAssets() {
+    std::vector<RecentAsset> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        snapshot = recentAssets_;
+    }
+
+    const std::string filePath = getRecentAssetsFilePath();
+    if (filePath.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    const fs::path path(filePath);
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) {
+        LOG_WARN("Failed to create recent assets directory: " + path.parent_path().string() +
+                 ", err=" + ec.message());
+        return;
+    }
+
+    json payload = json::array();
+    for (const auto& recent : snapshot) {
+        const auto epochSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+            recent.lastAccess.time_since_epoch()).count();
+        payload.push_back({
+            {"assetId", recent.assetId},
+            {"hostname", recent.hostname},
+            {"accessCount", recent.accessCount},
+            {"lastAccessEpochSeconds", epochSeconds}
+        });
+    }
+
+    const fs::path tempPath = path.string() + ".tmp." + std::to_string(::getpid());
+    std::ofstream file(tempPath, std::ios::out | std::ios::trunc);
+    if (!file.is_open()) {
+        LOG_WARN("Failed to write recent assets file: " + tempPath.string());
+        return;
+    }
+
+    file << payload.dump(2) << std::endl;
+    file.close();
+    if (!file) {
+        fs::remove(tempPath, ec);
+        return;
+    }
+
+    chmod(tempPath.c_str(), 0600);
+    if (::rename(tempPath.c_str(), filePath.c_str()) != 0) {
+        fs::remove(tempPath, ec);
+        LOG_WARN("Failed to replace recent assets file: " + filePath);
+        return;
+    }
+    chmod(filePath.c_str(), 0600);
+}
+
+std::optional<AssetInfo> InteractiveSession::resolveRecentAsset(size_t index) const {
+    std::string assetId;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (index >= recentAssets_.size()) {
+            return std::nullopt;
+        }
+        assetId = recentAssets_[index].assetId;
+    }
+
+    if (assetId.empty()) {
+        return std::nullopt;
+    }
+    return assetManager_->getAssetById(assetId);
 }
 
 void InteractiveSession::showEmptyAssetMenu() {
@@ -1107,10 +1405,14 @@ bool InteractiveSession::handleEmptyMenuSelection(const std::string& input) {
             if (input.length() > 1 && !recentAssets_.empty()) {
                 try {
                     int index = std::stoi(input.substr(1)) - 1;
-                    if (index >= 0 && index < static_cast<int>(recentAssets_.size())) {
-                        // 重新连接到该资产
-                        sendToUser("\r\n\033[90m尝试连接最近访问...\033[0m\r\n");
-                        // TODO: 实现重新连接逻辑
+                    if (index >= 0) {
+                        auto asset = resolveRecentAsset(static_cast<size_t>(index));
+                        if (asset) {
+                            sendToUser("\r\n\033[90m尝试连接最近访问...\033[0m\r\n");
+                            return connectToAsset(*asset);
+                        }
+                        sendToUser("\r\n\033[31m最近访问的资产已不可用\033[0m\r\n");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(800));
                     }
                 } catch (...) {
                     // 无效的数字

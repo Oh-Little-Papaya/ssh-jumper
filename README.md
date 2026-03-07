@@ -114,3 +114,5 @@ ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-s
 - 该工具直接与运行中的 `ssh_jump_server` 通信。
 - 管理请求使用 `--admin-token` 加密封装后传输。
 - 节点返回数据不再暴露 node token；用户返回数据不再回显公钥原文。
+- 运行时对用户和节点的增删改会持久化到用户文件与 agent token 文件；默认路径分别是 `/etc/ssh_jump/users.conf` 与 `/etc/ssh_jump/agent_tokens.conf`，也可通过 `--users-file` 和 `--agent-token-file` 指定。
+- 使用 `--user` 或 `--user-hash` 启动引导的账户也会写入用户文件，便于后续重启继续使用。

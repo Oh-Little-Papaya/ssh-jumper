@@ -4,12 +4,18 @@
  */
 
 #include "config_manager.h"
+#include "password_utils.h"
+#include <cstdio>
+#include <filesystem>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <openssl/rand.h>
 #include <iomanip>
+#include <sys/stat.h>
 
 namespace sshjump {
+
+namespace fs = std::filesystem;
 
 // PBKDF2 配置常量
 constexpr int PBKDF2_ITERATIONS = 100000;
@@ -37,6 +43,105 @@ bool parseAuthMethodsMask(const std::string& raw, bool& hasUnknown) {
     return methodCount > 0;
 }
 
+bool decodeBase64String(const std::string& input, std::vector<uint8_t>& out) {
+    out.clear();
+    if (input.empty()) {
+        return false;
+    }
+
+    out.resize((input.size() * 3) / 4 + 3);
+    const int decodedLen = EVP_DecodeBlock(
+        out.data(),
+        reinterpret_cast<const unsigned char*>(input.data()),
+        static_cast<int>(input.size()));
+    if (decodedLen < 0) {
+        out.clear();
+        return false;
+    }
+
+    size_t trimLen = static_cast<size_t>(decodedLen);
+    if (!input.empty() && input.back() == '=') {
+        trimLen--;
+        if (input.size() > 1 && input[input.size() - 2] == '=') {
+            trimLen--;
+        }
+    }
+    out.resize(trimLen);
+    return true;
+}
+
+bool decodeOpenSshPublicKeyBlob(const std::string& keyValue,
+                                std::vector<uint8_t>& blob) {
+    std::istringstream iss(keyValue);
+    std::string keyType;
+    std::string base64Blob;
+    iss >> keyType >> base64Blob;
+
+    if (keyType.empty() || base64Blob.empty()) {
+        return false;
+    }
+    if (!(keyType.rfind("ssh-", 0) == 0 || keyType.rfind("ecdsa-", 0) == 0)) {
+        return false;
+    }
+
+    return decodeBase64String(base64Blob, blob);
+}
+
+std::string sha256HexFromBytes(const uint8_t* data, size_t len) {
+    if (!data || len == 0) {
+        return "";
+    }
+
+    unsigned char digest[SHA256_DIGEST_LENGTH] = {0};
+    if (!SHA256(data, len, digest)) {
+        return "";
+    }
+    return bytesToHex(digest, sizeof(digest));
+}
+
+std::string normalizePublicKeyForVerification(const std::string& rawValue) {
+    std::string value = trimString(rawValue);
+    if (value.empty()) {
+        return "";
+    }
+
+    // 如果是 OpenSSH 公钥原文，转换为 SHA256(hex) 指纹，便于和运行时对比。
+    if (value.rfind("ssh-", 0) == 0 || value.rfind("ecdsa-", 0) == 0) {
+        std::vector<uint8_t> blob;
+        if (decodeOpenSshPublicKeyBlob(value, blob)) {
+            const std::string digestHex = sha256HexFromBytes(blob.data(), blob.size());
+            if (!digestHex.empty()) {
+                return digestHex;
+            }
+        }
+    }
+
+    return value;
+}
+
+std::string sha256TagFromHexDigest(const std::string& hexDigest) {
+    std::vector<uint8_t> digest;
+    if (!hexToBytes(hexDigest, digest) || digest.size() != SHA256_DIGEST_LENGTH) {
+        return "";
+    }
+
+    std::string base64;
+    base64.resize(((digest.size() + 2) / 3) * 4);
+    const int encodedLen = EVP_EncodeBlock(
+        reinterpret_cast<unsigned char*>(&base64[0]),
+        digest.data(),
+        static_cast<int>(digest.size()));
+    if (encodedLen <= 0) {
+        return "";
+    }
+    base64.resize(static_cast<size_t>(encodedLen));
+
+    while (!base64.empty() && base64.back() == '=') {
+        base64.pop_back();
+    }
+    return "SHA256:" + base64;
+}
+
 // 全局日志级别定义
 std::atomic<LogLevel> g_logLevel{LogLevel::INFO};
 
@@ -44,6 +149,80 @@ ConfigManager::ConfigManager() {
 }
 
 ConfigManager::~ConfigManager() {
+}
+
+bool ConfigManager::saveUsersToFile(const std::string& path,
+                                    const std::vector<UserAuthInfo>& users) {
+    if (path.empty()) {
+        return true;
+    }
+
+    std::error_code ec;
+    const fs::path filePath(path);
+    const fs::path parentPath = filePath.parent_path();
+    if (!parentPath.empty()) {
+        fs::create_directories(parentPath, ec);
+        if (ec) {
+            LOG_ERROR("Failed to create users directory: " + parentPath.string() +
+                      ", err=" + ec.message());
+            return false;
+        }
+    }
+
+    std::vector<UserAuthInfo> sortedUsers = users;
+    std::sort(sortedUsers.begin(), sortedUsers.end(), [](const UserAuthInfo& a,
+                                                         const UserAuthInfo& b) {
+        return a.username < b.username;
+    });
+
+    const fs::path tempPath = filePath.string() + ".tmp." + std::to_string(::getpid());
+    std::ofstream file(tempPath, std::ios::out | std::ios::trunc);
+    if (!file.is_open()) {
+        LOG_ERROR("Failed to open users file for write: " + tempPath.string());
+        return false;
+    }
+
+    file << "# SSH Jump users\n";
+    file << "# Format: username = password_hash[:public_key][:must_change][:disabled]\n\n";
+    for (const auto& user : sortedUsers) {
+        file << user.username << " = " << user.passwordHash;
+        if (!user.publicKey.empty()) {
+            file << ":" << user.publicKey;
+        }
+        if (user.mustChangePassword) {
+            file << ":must_change";
+        }
+        if (!user.enabled) {
+            file << ":disabled";
+        }
+        file << "\n";
+    }
+    file.close();
+
+    if (!file) {
+        fs::remove(tempPath, ec);
+        LOG_ERROR("Failed to flush users file: " + tempPath.string());
+        return false;
+    }
+
+    chmod(tempPath.c_str(), 0600);
+    if (::rename(tempPath.c_str(), path.c_str()) != 0) {
+        const std::string error = std::strerror(errno);
+        fs::remove(tempPath, ec);
+        LOG_ERROR("Failed to replace users file: " + path + ", err=" + error);
+        return false;
+    }
+    chmod(path.c_str(), 0600);
+    return true;
+}
+
+bool ConfigManager::saveUsersUnlocked() {
+    std::vector<UserAuthInfo> users;
+    users.reserve(serverConfig_.users.size());
+    for (const auto& pair : serverConfig_.users) {
+        users.push_back(pair.second);
+    }
+    return saveUsersToFile(serverConfig_.security.usersFile, users);
 }
 
 bool ConfigManager::loadFromFile(const std::string& path) {
@@ -136,6 +315,10 @@ bool ConfigManager::createUser(const UserAuthInfo& user) {
         return false;
     }
     serverConfig_.users[user.username] = user;
+    if (!saveUsersUnlocked()) {
+        serverConfig_.users.erase(user.username);
+        return false;
+    }
     return true;
 }
 
@@ -149,7 +332,16 @@ bool ConfigManager::updateUser(const std::string& username, const std::function<
     if (it == serverConfig_.users.end()) {
         return false;
     }
-    return updater(it->second);
+    const UserAuthInfo original = it->second;
+    if (!updater(it->second)) {
+        it->second = original;
+        return false;
+    }
+    if (!saveUsersUnlocked()) {
+        it->second = original;
+        return false;
+    }
+    return true;
 }
 
 bool ConfigManager::deleteUser(const std::string& username) {
@@ -157,7 +349,22 @@ bool ConfigManager::deleteUser(const std::string& username) {
         return false;
     }
     std::unique_lock<std::shared_mutex> lock(configMutex_);
-    return serverConfig_.users.erase(username) > 0;
+    auto it = serverConfig_.users.find(username);
+    if (it == serverConfig_.users.end()) {
+        return false;
+    }
+    const UserAuthInfo original = it->second;
+    serverConfig_.users.erase(it);
+    if (!saveUsersUnlocked()) {
+        serverConfig_.users[username] = original;
+        return false;
+    }
+    return true;
+}
+
+bool ConfigManager::persistUsers() {
+    std::unique_lock<std::shared_mutex> lock(configMutex_);
+    return saveUsersUnlocked();
 }
 
 void ConfigManager::parseLine(const std::string& line, const std::string& currentSection, ServerConfig& config) {
@@ -266,14 +473,26 @@ bool ConfigManager::loadUsers(const std::string& path) {
                 user.mustChangePassword = true;
             } else if (part == "disabled") {
                 user.enabled = false;
+            } else if (part == "SHA256" && i + 1 < parts.size()) {
+                std::string suffix = trimString(parts[i + 1]);
+                if (!suffix.empty()) {
+                    user.publicKey = "SHA256:" + suffix;
+                    i++;
+                }
+            } else if (part.rfind("SHA256:", 0) == 0) {
+                user.publicKey = part;
             } else if (part.rfind("ssh-rsa", 0) == 0 ||
-                       part.rfind("ssh-ed2", 0) == 0 ||
+                       part.rfind("ssh-ed", 0) == 0 ||
                        part.rfind("ssh-ed25519", 0) == 0 ||
                        part.rfind("ecdsa-", 0) == 0) {
                 user.publicKey = part;
-            } else if (part.find("SHA256:") == 0 || part.length() >= 32) {
+            } else if (part.length() >= 32) {
                 user.publicKey = part;
             }
+        }
+
+        if (!user.publicKey.empty()) {
+            user.publicKey = normalizePublicKeyForVerification(user.publicKey);
         }
 
         loadedUsers[username] = user;
@@ -284,6 +503,7 @@ bool ConfigManager::loadUsers(const std::string& path) {
 
     {
         std::unique_lock<std::shared_mutex> lock(configMutex_);
+        serverConfig_.security.usersFile = path;
         serverConfig_.users = std::move(loadedUsers);
         LOG_INFO("Users loaded from: " + path + ", total: " + std::to_string(serverConfig_.users.size()));
     }
@@ -297,46 +517,7 @@ std::string ConfigManager::hashPassword(const std::string& password) {
 }
 
 std::string ConfigManager::hashPasswordPbkdf2(const std::string& password) {
-    // 生成随机盐值
-    std::string salt = generateSalt(PBKDF2_SALT_LENGTH);
-    if (salt.empty()) {
-        LOG_ERROR("Failed to generate salt for password hashing");
-        return "";
-    }
-
-    // 计算哈希
-    unsigned char hash[PBKDF2_HASH_LENGTH];
-    int ret = PKCS5_PBKDF2_HMAC(
-        password.c_str(), password.length(),
-        reinterpret_cast<const unsigned char*>(salt.c_str()), salt.length(),
-        PBKDF2_ITERATIONS,
-        EVP_sha512(),
-        PBKDF2_HASH_LENGTH, hash
-    );
-
-    if (ret != 1) {
-        LOG_ERROR("PKCS5_PBKDF2_HMAC failed");
-        return "";
-    }
-
-    // 格式: PBKDF2$iterations$salt_hex$hash_hex
-    std::stringstream ss;
-    ss << "PBKDF2$" << PBKDF2_ITERATIONS << "$";
-
-    // 盐值转十六进制
-    for (int i = 0; i < PBKDF2_SALT_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0')
-           << static_cast<int>(static_cast<unsigned char>(salt[i]));
-    }
-    ss << "$";
-
-    // 哈希转十六进制
-    for (int i = 0; i < PBKDF2_HASH_LENGTH; i++) {
-        ss << std::hex << std::setw(2) << std::setfill('0')
-           << static_cast<int>(hash[i]);
-    }
-
-    return ss.str();
+    return security::hashPasswordPbkdf2(password);
 }
 
 bool ConfigManager::verifyPbkdf2Password(const std::string& password, const std::string& storedHash) {
@@ -462,6 +643,9 @@ bool ConfigManager::verifyUserPassword(const std::string& username, const std::s
             std::string newHash = hashPasswordPbkdf2(password);
             if (!newHash.empty()) {
                 it->second.passwordHash = newHash;
+                if (!saveUsersUnlocked()) {
+                    LOG_WARN("Failed to persist upgraded password hash for user " + username);
+                }
                 LOG_INFO("Upgraded password hash for user " + username + " to PBKDF2");
             }
         }
@@ -488,18 +672,28 @@ bool ConfigManager::verifyUserPublicKey(const std::string& username, const std::
         return false;
     }
 
-    const std::string& configuredKey = it->second.publicKey;
+    const std::string configuredKey =
+        normalizePublicKeyForVerification(it->second.publicKey);
+    const std::string presentedKey =
+        normalizePublicKeyForVerification(publicKey);
 
-    // 仅支持完全匹配（移除不安全的后缀匹配）
-    if (publicKey == configuredKey) {
+    if (configuredKey.empty() || presentedKey.empty()) {
+        return false;
+    }
+
+    // 优先做同格式严格匹配
+    if (timingSafeEqual(configuredKey, presentedKey)) {
         return true;
     }
 
-    // 支持 SHA256:xxx 格式的完整匹配（不是后缀匹配）
-    // 如果配置的是 "SHA256:xxx"，则实际指纹也必须是 "SHA256:xxx"
-    if (configuredKey.find("SHA256:") == 0) {
-        // 配置的是带前缀的完整指纹
-        return publicKey == configuredKey;
+    // 兼容 SHA256:base64 与 SHA256(hex) 两种指纹格式
+    if (configuredKey.rfind("SHA256:", 0) == 0) {
+        const std::string converted = sha256TagFromHexDigest(presentedKey);
+        return !converted.empty() && timingSafeEqual(configuredKey, converted);
+    }
+    if (presentedKey.rfind("SHA256:", 0) == 0) {
+        const std::string converted = sha256TagFromHexDigest(configuredKey);
+        return !converted.empty() && timingSafeEqual(converted, presentedKey);
     }
 
     return false;

@@ -101,7 +101,7 @@ class SSHConnection : public std::enable_shared_from_this<SSHConnection> {
   void startInteractiveSession();
 
   // libssh 会话
-  ssh_session session_;
+  std::shared_ptr<ssh_session_struct> sessionHolder_;
 
   // libssh bind
   ssh_bind sshbind_;

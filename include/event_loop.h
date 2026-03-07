@@ -1,6 +1,6 @@
 /**
  * @file event_loop.h
- * @brief 事件循环 - 支持 epoll 和 io_uring
+ * @brief 事件循环 - 当前实现为 epoll，预留 io_uring 扩展点
  */
 
 #ifndef SSH_JUMP_EVENT_LOOP_H
