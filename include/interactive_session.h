@@ -47,7 +47,7 @@ public:
     void disconnect();
     
     // 执行命令
-    bool executeCommand(const std::string& command, std::string& output);
+    bool executeCommand(const std::string& command, std::string& output, int* exitStatus = nullptr);
     
     // 请求 PTY
     bool requestPty(const std::string& term = "xterm", 
@@ -168,10 +168,13 @@ public:
     
     // 停止会话
     void stop();
-    
+
 private:
     // 尝试直接连接 (命令行参数/环境变量指定)
     bool tryDirectConnect();
+
+    // 尝试接管到 tmux 会话（断线重连场景）
+    bool tryAttachTmuxSession();
     
     // 显示资产菜单
     void showAssetMenu(const std::vector<AssetInfo>& assets, int page = 0);
@@ -262,7 +265,7 @@ private:
     
     // 最近访问列表 (持久化到文件)
     std::vector<RecentAsset> recentAssets_;
-    
+
     // 互斥锁
     mutable std::mutex mutex_;
     

@@ -64,6 +64,8 @@ void printUsage(const char* program) {
               << "      --reverse-tunnel-accept-timeout-ms <ms> Reverse tunnel accept timeout (default: 7000)\n"
               << "      --max-connections-per-minute <n>   SSH connection rate limit (default: 0, unlimited)\n"
               << "      --pid-file <path>                  PID file path\n"
+              << "      --tmux-enabled <true|false>        Enable tmux reconnect sessions (default: false)\n"
+              << "      --tmux-session-prefix <prefix>     Tmux session name prefix (default: sj)\n"
               << "  -d, --daemon            Run as daemon\n"
               << "  -v, --verbose           Verbose output\n"
               << "  -h, --help              Show this help message\n"
@@ -73,6 +75,7 @@ void printUsage(const char* program) {
               << "  2. Env var:   JUMP_TARGET=web-server-01 ssh -p 2222 admin@jump.example.com\n"
               << "  3. Interactive: ssh -p 2222 admin@jump.example.com\n"
               << "  4. Quick:     ssh -p 2222 admin@jump.example.com @1\n"
+              << "  5. Reconnect (tmux): ssh -p 2222 admin@jump.example.com (auto-attach)\n"
               << "\nExamples:\n"
               << "  " << program << " -p 2222 -a 8888 --token cluster-secret --admin-token admin-secret --user admin:StrongPass123\n"
               << "  " << program << " -d --token cluster-secret --admin-token admin-secret --user-hash admin:PBKDF2$100000$...$...\n";
@@ -328,6 +331,8 @@ int main(int argc, char* argv[]) {
     int maxConnectionsPerMinute = 0;
     bool runAsDaemon = false;
     bool verbose = false;
+    bool tmuxEnabled = false;
+    std::string tmuxSessionPrefix = "sj";
 
     enum LongOptionValue {
         OPT_LISTEN_ADDRESS = 1000,
@@ -348,7 +353,9 @@ int main(int argc, char* argv[]) {
         OPT_MAX_CONNECTIONS_PER_MINUTE,
         OPT_USERS_FILE,
         OPT_AGENT_TOKEN_FILE,
-        OPT_PID_FILE
+        OPT_PID_FILE,
+        OPT_TMUX_ENABLED,
+        OPT_TMUX_SESSION_PREFIX
     };
     
     // 命令行参数解析
@@ -374,6 +381,8 @@ int main(int argc, char* argv[]) {
         {"reverse-tunnel-accept-timeout-ms", required_argument, nullptr, OPT_RT_ACCEPT_TIMEOUT_MS},
         {"max-connections-per-minute", required_argument, nullptr, OPT_MAX_CONNECTIONS_PER_MINUTE},
         {"pid-file", required_argument, nullptr, OPT_PID_FILE},
+        {"tmux-enabled", required_argument, nullptr, OPT_TMUX_ENABLED},
+        {"tmux-session-prefix", required_argument, nullptr, OPT_TMUX_SESSION_PREFIX},
         {"daemon", no_argument, nullptr, 'd'},
         {"verbose", no_argument, nullptr, 'v'},
         {"help", no_argument, nullptr, 'h'},
@@ -477,6 +486,25 @@ int main(int argc, char* argv[]) {
             case OPT_PID_FILE:
                 pidFile = trimString(optarg);
                 break;
+            case OPT_TMUX_ENABLED: {
+                const std::string value = trimString(optarg);
+                if (value == "true" || value == "1" || value == "yes" || value == "on") {
+                    tmuxEnabled = true;
+                } else if (value == "false" || value == "0" || value == "no" || value == "off") {
+                    tmuxEnabled = false;
+                } else {
+                    std::cerr << "Invalid --tmux-enabled value: " << optarg << std::endl;
+                    return 1;
+                }
+                break;
+            }
+            case OPT_TMUX_SESSION_PREFIX:
+                tmuxSessionPrefix = trimString(optarg);
+                if (tmuxSessionPrefix.empty()) {
+                    std::cerr << "Invalid --tmux-session-prefix value" << std::endl;
+                    return 1;
+                }
+                break;
             case 'd':
                 runAsDaemon = true;
                 break;
@@ -567,6 +595,9 @@ int main(int argc, char* argv[]) {
         config.security.defaultTargetPrivateKey = defaultTargetPrivateKey;
         config.security.defaultTargetPrivateKeyPassword = defaultTargetKeyPassword;
         config.security.maxConnectionsPerMinute = maxConnectionsPerMinute;
+
+        config.tmux.enabled = tmuxEnabled;
+        config.tmux.sessionPrefix = tmuxSessionPrefix;
 
         config.management.childNodesFile = ManagementConfig().childNodesFile;
     });

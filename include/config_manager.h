@@ -58,6 +58,14 @@ struct LoggingConfig {
 };
 
 // ============================================
+// Tmux 会话配置
+// ============================================
+struct TmuxConfig {
+    bool enabled = false;
+    std::string sessionPrefix = "sj";
+};
+
+// ============================================
 // 安全配置
 // ============================================
 struct SecurityConfig {
@@ -107,6 +115,7 @@ struct ServerConfig {
     ClusterConfig cluster;
     AssetsConfig assets;
     LoggingConfig logging;
+    TmuxConfig tmux;
     SecurityConfig security;
     ManagementConfig management;
     std::unordered_map<std::string, UserAuthInfo> users;  // 用户认证信息

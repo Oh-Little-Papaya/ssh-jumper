@@ -411,6 +411,10 @@ void ConfigManager::parseLine(const std::string& line, const std::string& curren
         else if (key == "session_recording") config.logging.sessionRecording = (value == "true");
         else if (key == "session_path") config.logging.sessionPath = value;
     }
+    else if (currentSection == "tmux") {
+        if (key == "enabled") config.tmux.enabled = (value == "true");
+        else if (key == "session_prefix") config.tmux.sessionPrefix = value;
+    }
     else if (currentSection == "security") {
         if (key == "command_audit") config.security.commandAudit = (value == "true");
         else if (key == "allow_port_forwarding") config.security.allowPortForwarding = (value == "true");
@@ -779,6 +783,9 @@ void ConfigManager::printConfig() {
              std::to_string(serverConfig_.cluster.reverseTunnelPortEnd));
     LOG_INFO("  Reverse Tunnel Retries: " + std::to_string(serverConfig_.cluster.reverseTunnelRetries));
     LOG_INFO("  Reverse Tunnel Accept Timeout(ms): " + std::to_string(serverConfig_.cluster.reverseTunnelAcceptTimeoutMs));
+    LOG_INFO("Tmux:");
+    LOG_INFO("  Enabled: " + std::string(serverConfig_.tmux.enabled ? "true" : "false"));
+    LOG_INFO("  Session Prefix: " + serverConfig_.tmux.sessionPrefix);
     LOG_INFO("Security:");
     if (serverConfig_.security.maxConnectionsPerMinute <= 0) {
         LOG_INFO("  Max Connections Per Minute: unlimited");

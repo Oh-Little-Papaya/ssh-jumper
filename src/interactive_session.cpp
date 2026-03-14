@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <array>
+#include <sys/wait.h>
 #include <sys/stat.h>
 
 #include <nlohmann/json.hpp>
@@ -71,6 +73,69 @@ std::string getServerKeyFingerprintHex(ssh_session session) {
     }
 
     return fingerprint;
+}
+
+std::string sanitizeTmuxComponent(const std::string& value) {
+    std::string sanitized;
+    sanitized.reserve(value.size());
+    for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') {
+            sanitized.push_back(ch);
+        } else {
+            sanitized.push_back('_');
+        }
+    }
+    return sanitized.empty() ? "unknown" : sanitized;
+}
+
+bool runCommandCapture(const std::vector<std::string>& args,
+                       std::string& output,
+                       int& exitCode) {
+    output.clear();
+    exitCode = -1;
+    if (args.empty()) {
+        return false;
+    }
+
+    std::string command;
+    for (const auto& arg : args) {
+        if (!command.empty()) {
+            command.push_back(' ');
+        }
+        // 仅允许安全字符，避免 shell 注入
+        bool safe = true;
+        for (char ch : arg) {
+            if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_' || ch == '.' || ch == ':' || ch == '+' || ch == '/' )) {
+                safe = false;
+                break;
+            }
+        }
+        if (!safe) {
+            return false;
+        }
+        command.append(arg);
+    }
+
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return false;
+    }
+
+    std::array<char, 256> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
+        output.append(buffer.data());
+    }
+
+    int status = pclose(pipe);
+    if (status == -1) {
+        return false;
+    }
+    if (WIFEXITED(status)) {
+        exitCode = WEXITSTATUS(status);
+        return true;
+    }
+    exitCode = status;
+    return false;
 }
 
 } // namespace
@@ -306,6 +371,58 @@ bool SSHClient::openShell() {
         return false;
     }
     
+    return true;
+}
+
+bool SSHClient::executeCommand(const std::string& command, std::string& output, int* exitStatus) {
+    output.clear();
+    if (exitStatus) {
+        *exitStatus = -1;
+    }
+    if (!connected_ || !session_) {
+        return false;
+    }
+
+    ssh_channel execChannel = ssh_channel_new(session_);
+    if (!execChannel) {
+        return false;
+    }
+    if (ssh_channel_open_session(execChannel) != SSH_OK) {
+        ssh_channel_free(execChannel);
+        return false;
+    }
+    if (ssh_channel_request_exec(execChannel, command.c_str()) != SSH_OK) {
+        ssh_channel_close(execChannel);
+        ssh_channel_free(execChannel);
+        return false;
+    }
+
+    char buffer[DEFAULT_BUFFER_SIZE];
+    for (;) {
+        int n = ssh_channel_read(execChannel, buffer, sizeof(buffer), 0);
+        if (n > 0) {
+            output.append(buffer, n);
+            continue;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (n == SSH_AGAIN) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            continue;
+        }
+        break;
+    }
+
+    if (exitStatus) {
+        if (ssh_channel_get_exit_status(execChannel) >= 0) {
+            *exitStatus = ssh_channel_get_exit_status(execChannel);
+        }
+    }
+
+    ssh_channel_send_eof(execChannel);
+    ssh_channel_close(execChannel);
+    ssh_channel_free(execChannel);
     return true;
 }
 
@@ -547,6 +664,11 @@ void InteractiveSession::start() {
     if (tryDirectConnect()) {
         return;
     }
+
+    // 尝试接管 tmux 会话（断线重连）
+    if (tryAttachTmuxSession()) {
+        return;
+    }
     
     // 进入交互式菜单模式
     state_ = SessionState::MENU;
@@ -674,6 +796,62 @@ bool InteractiveSession::tryDirectConnect() {
         readUserInput();
     }
     
+    return false;
+}
+
+bool InteractiveSession::tryAttachTmuxSession() {
+    const auto config = ConfigManager::getInstance().getServerConfig();
+    if (!config.tmux.enabled) {
+        return false;
+    }
+
+    if (username_.empty()) {
+        return false;
+    }
+
+    auto conn = connection_.lock();
+    if (!conn) {
+        return false;
+    }
+
+    if (conn->getClientIp().empty()) {
+        return false;
+    }
+
+    // 仅在用户未显式指定目标时尝试 tmux 接管
+    if (!directTarget_.empty()) {
+        return false;
+    }
+    const char* envTarget = std::getenv("JUMP_TARGET");
+    if (envTarget && envTarget[0] != '\0') {
+        return false;
+    }
+
+    const auto recentList = getRecentAssets(3);
+    if (recentList.empty()) {
+        return false;
+    }
+
+    for (const auto& recent : recentList) {
+        auto assetOpt = assetManager_->getAssetById(recent.assetId);
+        if (!assetOpt) {
+            continue;
+        }
+        const auto& asset = *assetOpt;
+        if (!asset.isOnline) {
+            continue;
+        }
+
+        sendToUser("\r\n\033[90m尝试接管最近会话: " + asset.hostname + " ...\033[0m\r\n");
+
+        setenv("SSHJUMP_TMUX_ATTACH", "1", 1);
+        if (connectToAsset(asset)) {
+            unsetenv("SSHJUMP_TMUX_ATTACH");
+            return true;
+        }
+        unsetenv("SSHJUMP_TMUX_ATTACH");
+    }
+
     return false;
 }
 
@@ -1061,6 +1239,36 @@ bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
         targetClient->disconnect();
         state_ = SessionState::MENU;
         return false;
+    }
+
+    // 如果开启 tmux 会话接管，确保目标端进入 tmux
+    const auto config = ConfigManager::getInstance().getServerConfig();
+    const bool tmuxAttach = (std::getenv("SSHJUMP_TMUX_ATTACH") != nullptr);
+    if (config.tmux.enabled) {
+        auto conn = connection_.lock();
+        if (conn) {
+            const std::string prefix = sanitizeTmuxComponent(config.tmux.sessionPrefix);
+            const std::string safeUser = sanitizeTmuxComponent(username_);
+            const std::string safeAsset = sanitizeTmuxComponent(asset.id.empty() ? asset.hostname : asset.id);
+            const std::string safeIp = sanitizeTmuxComponent(conn->getClientIp());
+            const std::string sessionName = prefix + "-" + safeUser + "-" + safeAsset + "-" + safeIp;
+
+            if (tmuxAttach) {
+                // 直接接管已存在的 tmux 会话
+                std::string tmuxCmd = "tmux attach -t " + sessionName;
+                targetClient->write(tmuxCmd.c_str(), tmuxCmd.size());
+                targetClient->write("\n", 1);
+            } else {
+                // 新建或恢复会话
+                int exitStatus = -1;
+                std::string tmuxCheckOutput;
+                if (targetClient->executeCommand("command -v tmux", tmuxCheckOutput, &exitStatus) && exitStatus == 0) {
+                    std::string tmuxCmd = "tmux new-session -A -s " + sessionName;
+                    targetClient->write(tmuxCmd.c_str(), tmuxCmd.size());
+                    targetClient->write("\n", 1);
+                }
+            }
+        }
     }
 
     // 设置非阻塞模式（对 DataBridge 很重要！）
