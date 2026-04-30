@@ -21,9 +21,8 @@
 │   │                      │       端口: 2222 (SSH), 8888 (Agent)    │
 │   │                      │                                         │
 │   │  用户认证:            │                                         │
-│   │  - admin/admin123    │                                         │
-│   │  - developer/dev123  │                                         │
-│   │  - ops/ops123        │                                         │
+│   │  - 通过 .env 自定义   │                                         │
+│   │  - 不提供默认密码     │                                         │
 │   └──────────┬───────────┘                                         │
 │              │ Agent 协议 (port 8888)                               │
 │     ┌────────┼────────┬─────────┬─────────┐                        │
@@ -56,6 +55,10 @@
 ### 一键启动
 
 ```bash
+# 先创建本地环境变量文件，并把每个值替换成自己的强密码/随机 Token
+cp .env.example .env
+$EDITOR .env
+
 # 启动所有服务
 docker compose up -d
 
@@ -70,12 +73,12 @@ docker compose ps
 
 ```bash
 # 方式1：从客户端容器连接（推荐）
-docker exec -it jump-client ssh -p 2222 admin@jump-server
-# 密码: admin123
+docker exec -it jump-client ssh -p 2222 "$JUMP_USER"@jump-server
+# 密码: 使用 .env 中的 JUMP_PASS
 
 # 方式2：从宿主机连接（如果端口映射）
-ssh -p 2222 admin@localhost
-# 密码: admin123
+ssh -p 2222 "$JUMP_USER"@localhost
+# 密码: 使用 .env 中的 JUMP_PASS
 
 # 方式3：运行自动化测试
 docker exec jump-client /usr/local/bin/client-test.sh auto
@@ -110,19 +113,25 @@ SSH Jump Server - 安全访问网关
 
 ## 用户凭证
 
-| 用户名 | 密码 | 角色 | 可访问资产 |
-|--------|------|------|-----------|
-| admin | admin123 | 管理员 | 所有资产 |
-| developer | dev123 | 开发者 | web-*, api-* |
-| ops | ops123 | 运维 | web-*, api-*, cache-* |
+Docker Compose 不再内置默认密码。请在 `.env` 中设置：
+
+| 变量 | 说明 |
+|------|------|
+| `SERVER_USERS` | 服务端启动用户，格式如 `admin:<pwd>,developer:<pwd>,ops:<pwd>` |
+| `JUMP_USER` / `JUMP_PASS` | 客户端默认登录用户和密码 |
+| `DEVELOPER_USER` / `DEVELOPER_PASS` | 自动化测试中的 developer 用户 |
+| `OPS_USER` / `OPS_PASS` | 自动化测试中的 ops 用户 |
+| `CLUSTER_SHARED_TOKEN` | Agent 注册 Token |
+| `ADMIN_TOKEN` | 管理 API Token |
+| `AGENT_ROOT_PASSWORD` | 测试 Agent 容器中目标 SSH root 密码 |
 
 ## 测试场景
 
 ### 场景 1: 基本连接
 
 ```bash
-docker exec -it jump-client ssh -p 2222 admin@jump-server
-# 输入密码: admin123
+docker exec -it jump-client ssh -p 2222 "$JUMP_USER"@jump-server
+# 输入 .env 中的 JUMP_PASS
 # 应该看到 4 个资产
 ```
 
@@ -166,16 +175,16 @@ docker exec -it jump-client ssh -p 2222 admin@jump-server
 
 **开发者用户 - 只能看到 web/api：**
 ```bash
-docker exec -it jump-client ssh -p 2222 developer@jump-server
-# 密码: dev123
-# 预期: 只显示 web-server-01 和 api-server-01
+docker exec -it jump-client ssh -p 2222 "$DEVELOPER_USER"@jump-server
+# 密码: 使用 .env 中的 DEVELOPER_PASS
+# 预期: 显示可访问资产
 ```
 
 **运维用户 - 看不到 db：**
 ```bash
-docker exec -it jump-client ssh -p 2222 ops@jump-server
-# 密码: ops123
-# 预期: 显示 web, api, cache，但不显示 db
+docker exec -it jump-client ssh -p 2222 "$OPS_USER"@jump-server
+# 密码: 使用 .env 中的 OPS_PASS
+# 预期: 显示可访问资产
 ```
 
 ### 场景 7: Exit 返回菜单

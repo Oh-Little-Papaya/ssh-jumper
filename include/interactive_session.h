@@ -55,6 +55,9 @@ public:
     
     // 打开 Shell 会话
     bool openShell();
+
+    // 在当前 PTY channel 上执行交互命令
+    bool executeInteractiveCommand(const std::string& command);
     
     // 发送数据
     int write(const char* data, size_t len);

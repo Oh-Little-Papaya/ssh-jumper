@@ -32,9 +32,26 @@ log_warn() {
 JUMP_HOST="${JUMP_HOST:-jump-server}"
 JUMP_PORT="${JUMP_PORT:-2222}"
 JUMP_USER="${JUMP_USER:-admin}"
-JUMP_PASS="${JUMP_PASS:-admin123}"
+JUMP_PASS="${JUMP_PASS:-}"
+DEVELOPER_USER="${DEVELOPER_USER:-developer}"
+DEVELOPER_PASS="${DEVELOPER_PASS:-}"
+OPS_USER="${OPS_USER:-ops}"
+OPS_PASS="${OPS_PASS:-}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o ConnectionAttempts=1 -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no"
 ASSET_REGEX='web-server-01|api-server-01|db-server-01|cache-server-01'
+
+require_secret() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -z "$value" ]; then
+        log_error "$name is required"
+        exit 1
+    fi
+}
+
+require_secret JUMP_PASS
+require_secret DEVELOPER_PASS
+require_secret OPS_PASS
 
 strip_ansi() {
     sed -E 's/\x1B\[[0-9;?]*[ -/]*[@-~]//g' | tr -d '\r'
@@ -222,10 +239,10 @@ test_user_permissions() {
     # 测试 developer 用户（默认可见全部资产）
     log_info "测试 developer 用户..."
     local dev_output dev_assets
-    dev_output="$(capture_session_with_retry "developer" "dev123" "sleep 2; echo q" 25 4 "资产列表")"
+    dev_output="$(capture_session_with_retry "$DEVELOPER_USER" "$DEVELOPER_PASS" "sleep 2; echo q" 25 4 "资产列表")"
     dev_assets="$(echo "$dev_output" | extract_assets_from_output)"
 
-    echo "developer 用户看到的资产："
+    echo "$DEVELOPER_USER 用户看到的资产："
     echo "$dev_assets"
 
     if ! contains_asset "web-server-01" "$dev_assets" || ! contains_asset "api-server-01" "$dev_assets" || \
@@ -237,10 +254,10 @@ test_user_permissions() {
     # 测试 ops 用户（默认可见全部资产）
     log_info "测试 ops 用户..."
     local ops_output ops_assets
-    ops_output="$(capture_session_with_retry "ops" "ops123" "sleep 2; echo q" 25 4 "资产列表")"
+    ops_output="$(capture_session_with_retry "$OPS_USER" "$OPS_PASS" "sleep 2; echo q" 25 4 "资产列表")"
     ops_assets="$(echo "$ops_output" | extract_assets_from_output)"
 
-    echo "ops 用户看到的资产："
+    echo "$OPS_USER 用户看到的资产："
     echo "$ops_assets"
 
     if ! contains_asset "web-server-01" "$ops_assets" || ! contains_asset "api-server-01" "$ops_assets" || \
@@ -342,9 +359,9 @@ show_env_info() {
     echo "Jump Server: $JUMP_HOST:$JUMP_PORT"
     echo ""
     echo "测试用户:"
-    echo "  - admin / admin123 (管理员，访问所有资产)"
-    echo "  - developer / dev123 (开发者，默认访问所有资产)"
-    echo "  - ops / ops123 (运维，默认访问所有资产)"
+    echo "  - $JUMP_USER (管理员，访问所有资产)"
+    echo "  - $DEVELOPER_USER (开发者，默认访问所有资产)"
+    echo "  - $OPS_USER (运维，默认访问所有资产)"
     echo ""
     echo "Agent 资产:"
     echo "  - web-server-01"
@@ -424,13 +441,13 @@ main() {
                 run_all_tests
                 ;;
             2)
-                interactive_connect "admin" "admin123"
+                interactive_connect "$JUMP_USER" "$JUMP_PASS"
                 ;;
             3)
-                interactive_connect "developer" "dev123"
+                interactive_connect "$DEVELOPER_USER" "$DEVELOPER_PASS"
                 ;;
             4)
-                interactive_connect "ops" "ops123"
+                interactive_connect "$OPS_USER" "$OPS_PASS"
                 ;;
             5)
                 log_info "直接连接功能测试（如果服务器实现）"

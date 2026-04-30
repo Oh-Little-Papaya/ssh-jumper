@@ -22,6 +22,10 @@ services:
       - server-logs:/var/log/ssh_jump
     environment:
       - LOG_LEVEL=debug
+      - SERVER_USERS=${SERVER_USERS:?Set SERVER_USERS, for example admin:StrongPass123}
+      - CLUSTER_SHARED_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
+      - ADMIN_TOKEN=${ADMIN_TOKEN:?Set ADMIN_TOKEN}
+      - DEFAULT_TARGET_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
     healthcheck:
       test: ["CMD", "nc", "-z", "localhost", "2222"]
       interval: 5s
@@ -47,7 +51,8 @@ services:
       - jump-network
     environment:
       - AGENT_ID=web-server-01
-      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
+      - AGENT_ROOT_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=web-server-01
@@ -70,7 +75,8 @@ services:
       - jump-network
     environment:
       - AGENT_ID=api-server-01
-      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
+      - AGENT_ROOT_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=api-server-01
@@ -93,7 +99,8 @@ services:
       - jump-network
     environment:
       - AGENT_ID=db-server-01
-      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
+      - AGENT_ROOT_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=db-server-01
@@ -116,7 +123,8 @@ services:
       - jump-network
     environment:
       - AGENT_ID=cache-server-01
-      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:-cluster-secret-token}
+      - AGENT_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
+      - AGENT_ROOT_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
       - SERVER_HOST=jump-server
       - SERVER_PORT=8888
       - AGENT_HOSTNAME=cache-server-01
@@ -142,8 +150,12 @@ services:
     environment:
       - JUMP_HOST=jump-server
       - JUMP_PORT=2222
-      - JUMP_USER=admin
-      - JUMP_PASS=admin123
+      - JUMP_USER=${JUMP_USER:-admin}
+      - JUMP_PASS=${JUMP_PASS:?Set JUMP_PASS}
+      - DEVELOPER_USER=${DEVELOPER_USER:-developer}
+      - DEVELOPER_PASS=${DEVELOPER_PASS:?Set DEVELOPER_PASS}
+      - OPS_USER=${OPS_USER:-ops}
+      - OPS_PASS=${OPS_PASS:?Set OPS_PASS}
     depends_on:
       - jump-server
       - web-server-01

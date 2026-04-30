@@ -164,14 +164,11 @@ FUNC_TEST_WITH_TIMEOUT(security_invalid_token, "集成测试", 20) {
         "-n", "web-server-01",
         "-I", "10.10.0.11"
     };
-    FUNC_ASSERT_TRUE(badAgent.start(g_testEnv.getAgentBinary(), args));
-    
-    // 等待一段时间
-    std::this_thread::sleep_for(std::chrono::seconds(3));
-    
-    // Agent 应该因为认证失败而退出或无法保持连接
-    // 注意: 这取决于 Agent 的实现，可能保持运行但无法注册
-    
+    (void)badAgent.start(g_testEnv.getAgentBinary(), args);
+
+    // Agent 应该因为认证失败快速退出，且不能出现在在线节点列表中。
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    FUNC_ASSERT_TRUE(!badAgent.isRunning());
     badAgent.stop();
     FUNC_ASSERT_TRUE(waitForNodeOnline("web-01", false));
     g_testEnv.stopServer();

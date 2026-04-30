@@ -31,8 +31,8 @@ ssh_jump_server \
   -a 8888 \
   --listen-address 0.0.0.0 \
   --cluster-listen-address 0.0.0.0 \
-  --token cluster-secret-token \
-  --admin-token admin-secret-token \
+  --token <cluster-token> \
+  --admin-token <admin-token> \
   --user admin:Admin123! \
   --default-target-user root
 ```
@@ -40,7 +40,7 @@ ssh_jump_server \
 说明：
 - `--token` 仅用于 Agent 注册认证。
 - `--admin-token` 仅用于运行时管理接口认证（`ssh_jump_cluster_admin_tool`）。
-- 启动时必须通过 `--user` 或 `--user-hash` 提供至少一个账户，不再自动创建默认 `admin/admin123`。
+- 启动时必须通过 `--user` 或 `--user-hash` 提供至少一个账户，不再自动创建历史默认弱口令账户。
 - 默认不限制连接并发；如需限流可设置 `--max-connections-per-minute <n>`。
 
 ## 3) 启动 jump-agent
@@ -50,7 +50,7 @@ ssh_jump_agent \
   -s <jump-server-ip> \
   -p 8888 \
   -i web-server-01 \
-  -t cluster-secret-token \
+  -t <cluster-token> \
   -n web-server-01
 ```
 
@@ -72,42 +72,42 @@ ssh -p 2222 admin@<jump-server-ip> web-server-01
 
 ```bash
 # 列表
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --list-users
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --list-users
 
 # 新增（明文密码由服务端加密保存）
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> \
   --add-user ops --password 'OpsPass123' --must-change
 
 # 查询
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --get-user ops
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --get-user ops
 
 # 更新（改密/启用禁用/公钥）
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> \
   --update-user ops --password 'NewPass456' --enabled
 
 # 删除
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --delete-user ops
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --delete-user ops
 ```
 
 ### 5.2 节点管理
 
 ```bash
 # 列表
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --list-nodes
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --list-nodes
 
 # 新增
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> \
   --add-node web-01 --ip 10.0.0.21 --node-token web-01-token --hostname web-server-01
 
 # 查询
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --get-node web-01
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --get-node web-01
 
 # 更新
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token \
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> \
   --update-node web-01 --ip 10.0.0.22 --hostname web-server-01-new
 
 # 删除
-ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token admin-secret-token --delete-node web-01
+ssh_jump_cluster_admin_tool --server 127.0.0.1 --port 8888 --admin-token <admin-token> --delete-node web-01
 ```
 
 说明：

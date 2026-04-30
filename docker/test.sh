@@ -19,6 +19,30 @@ FAILED=0
 COMPOSE="docker compose"
 KEEP_TEST_ENV="${KEEP_TEST_ENV:-0}"
 
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$PROJECT_DIR/.env"
+    set +a
+fi
+
+JUMP_USER="${JUMP_USER:-admin}"
+DEVELOPER_USER="${DEVELOPER_USER:-developer}"
+OPS_USER="${OPS_USER:-ops}"
+
+require_secret() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -z "$value" ]; then
+        log_fail "$name is required"
+        exit 1
+    fi
+}
+
+require_secret JUMP_PASS
+require_secret DEVELOPER_PASS
+require_secret OPS_PASS
+
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -63,7 +87,7 @@ wait_for_assets_ready() {
     local attempt
 
     for attempt in $(seq 1 10); do
-        out="$(capture_menu_output "admin" "admin123" 4)"
+        out="$(capture_menu_output "$JUMP_USER" "$JUMP_PASS" 4)"
         if menu_has_all_assets "$out"; then
             log_pass "资产菜单就绪（attempt=${attempt}）"
             return
@@ -161,7 +185,7 @@ test_authentication() {
     log_info "测试 SSH 认证..."
     local admin_out=""
     for _ in 1 2 3; do
-        admin_out="$(capture_menu_output "admin" "admin123" 3)"
+        admin_out="$(capture_menu_output "$JUMP_USER" "$JUMP_PASS" 3)"
         if echo "$admin_out" | grep -q "web-server-01"; then
             break
         fi
@@ -175,7 +199,7 @@ test_authentication() {
 
     local dev_out=""
     for _ in 1 2 3; do
-        dev_out="$(capture_menu_output "developer" "dev123" 3)"
+        dev_out="$(capture_menu_output "$DEVELOPER_USER" "$DEVELOPER_PASS" 3)"
         if echo "$dev_out" | grep -q "web-server-01"; then
             break
         fi
@@ -188,7 +212,7 @@ test_authentication() {
     fi
 
     local bad_auth_out
-    bad_auth_out="$(run_client "set -o pipefail; timeout 15 sshpass -p 'wrongpass' ssh -tt -o ConnectTimeout=5 -o ConnectionAttempts=1 -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -p 2222 admin@jump-server < /dev/null 2>&1 || true")"
+    bad_auth_out="$(run_client "set -o pipefail; timeout 15 sshpass -p 'wrongpass' ssh -tt -o ConnectTimeout=5 -o ConnectionAttempts=1 -o NumberOfPasswordPrompts=1 -o PreferredAuthentications=password -o PubkeyAuthentication=no -o StrictHostKeyChecking=no -p 2222 ${JUMP_USER}@jump-server < /dev/null 2>&1 || true")"
     if echo "$bad_auth_out" | grep -E -qi "permission denied|认证失败|authentication failed"; then
         log_pass "错误密码被拒绝"
     else
@@ -201,7 +225,7 @@ test_user_asset_visibility() {
 
     local dev_out=""
     for _ in 1 2 3; do
-        dev_out="$(capture_menu_output "developer" "dev123" 4)"
+        dev_out="$(capture_menu_output "$DEVELOPER_USER" "$DEVELOPER_PASS" 4)"
         if echo "$dev_out" | grep -q "web-server-01"; then
             break
         fi
@@ -216,7 +240,7 @@ test_user_asset_visibility() {
 
     local ops_out=""
     for _ in 1 2 3; do
-        ops_out="$(capture_menu_output "ops" "ops123" 4)"
+        ops_out="$(capture_menu_output "$OPS_USER" "$OPS_PASS" 4)"
         if echo "$ops_out" | grep -q "cache-server-01"; then
             break
         fi
@@ -236,7 +260,7 @@ test_nat_reverse_tunnel() {
     local before_count after_count nat_flow
     before_count="$($COMPOSE logs jump-server 2>&1 | grep -c 'Reverse tunnel established for agent' || true)"
 
-    nat_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 2; echo exit) | sshpass -p 'admin123' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 admin@jump-server web-server-01\" 2>/dev/null || true")"
+    nat_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 2; echo exit) | sshpass -p '$JUMP_PASS' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 $JUMP_USER@jump-server web-server-01\" 2>/dev/null || true")"
 
     if echo "$nat_flow" | grep -q "连接失败"; then
         log_fail "NAT 回拨会话建立失败（连接被拒绝）"
@@ -257,7 +281,7 @@ test_session_connectivity() {
     log_info "测试会话连接能力（交互 + 直连）..."
 
     local menu_flow
-    menu_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 1; echo 1; sleep 2; echo exit; sleep 1; echo q) | sshpass -p 'admin123' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 admin@jump-server\" 2>/dev/null || true")"
+    menu_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 1; echo 1; sleep 2; echo exit; sleep 1; echo q) | sshpass -p '$JUMP_PASS' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 $JUMP_USER@jump-server\" 2>/dev/null || true")"
     if echo "$menu_flow" | grep -q "连接失败"; then
         log_fail "菜单连接流程失败（连接被拒绝）"
     elif echo "$menu_flow" | grep -E -q "正在连接到 .*api-server-01|root@api-server-01"; then
@@ -267,7 +291,7 @@ test_session_connectivity() {
     fi
 
     local direct_flow
-    direct_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 2; echo exit) | sshpass -p 'admin123' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 admin@jump-server web-server-01\" 2>/dev/null || true")"
+    direct_flow="$(run_client "set -o pipefail; timeout 35 bash -lc \"(sleep 2; echo exit) | sshpass -p '$JUMP_PASS' ssh -tt -o ConnectTimeout=8 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -p 2222 $JUMP_USER@jump-server web-server-01\" 2>/dev/null || true")"
     if echo "$direct_flow" | grep -q "连接失败"; then
         log_fail "直连目标流程失败（连接被拒绝）"
     elif echo "$direct_flow" | grep -E -q "正在连接到 .*web-server-01|root@web-server-01|root@"; then

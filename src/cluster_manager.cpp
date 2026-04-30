@@ -657,9 +657,12 @@ void AgentConnection::handleRegister(const std::string& payload) {
 }
 
 void AgentConnection::handleHeartbeat(const std::string& /*payload*/) {
-  if (!agentId_.empty()) {
-    manager_->updateHeartbeat(agentId_);
+  if (agentId_.empty() || !manager_ || !manager_->getAgent(agentId_)) {
+    sendResponse(false, "Not registered");
+    return;
   }
+
+  manager_->updateHeartbeat(agentId_);
   sendResponse(true, "Heartbeat received");
 }
 
@@ -2264,6 +2267,23 @@ bool ClusterAgentClient::registerToCluster(
     return false;
   }
 
+  AgentMessage response;
+  if (!receiveMessage(response)) {
+    LOG_ERROR("Failed to receive register response");
+    disconnect();
+    return false;
+  }
+
+  if (response.type != AgentMessageType::RESPONSE ||
+      response.payload.rfind("OK:", 0) != 0) {
+    const std::string detail =
+        response.payload.empty() ? std::string("malformed response")
+                                 : response.payload;
+    LOG_ERROR("Register rejected by cluster: " + detail);
+    disconnect();
+    return false;
+  }
+
   LOG_INFO("Registered to cluster");
   return true;
 }
@@ -2393,7 +2413,12 @@ void ClusterAgentClient::handleServerMessage(const AgentMessage& msg) {
       handleForwardRequest(msg.payload);
       break;
     case AgentMessageType::RESPONSE:
-      LOG_DEBUG("Received server response: " + msg.payload);
+      if (msg.payload.rfind("ERR:", 0) == 0) {
+        LOG_WARN("Received server error response: " + msg.payload);
+        disconnect();
+      } else {
+        LOG_DEBUG("Received server response: " + msg.payload);
+      }
       break;
     default:
       LOG_DEBUG("Ignoring unsupported server message type: " +

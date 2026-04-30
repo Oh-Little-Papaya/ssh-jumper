@@ -7,6 +7,8 @@
 #define SSH_JUMP_SSH_CONNECTION_H
 
 #include <libssh/callbacks.h>
+#include <libssh/libssh.h>
+#include <libssh/server.h>
 
 #include "common.h"
 

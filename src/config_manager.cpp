@@ -142,9 +142,6 @@ std::string sha256TagFromHexDigest(const std::string& hexDigest) {
     return "SHA256:" + base64;
 }
 
-// 全局日志级别定义
-std::atomic<LogLevel> g_logLevel{LogLevel::INFO};
-
 ConfigManager::ConfigManager() {
 }
 

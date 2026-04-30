@@ -3,11 +3,24 @@ set -e
 
 # 从环境变量获取配置
 AGENT_ID="${AGENT_ID:-$(hostname)}"
-AGENT_TOKEN="${AGENT_TOKEN:-default-token}"
+AGENT_TOKEN="${AGENT_TOKEN:-}"
 SERVER_HOST="${SERVER_HOST:-jump-server}"
 SERVER_PORT="${SERVER_PORT:-8888}"
 AGENT_HOSTNAME="${AGENT_HOSTNAME:-$AGENT_ID}"
 AGENT_IP="${AGENT_IP:-}"
+AGENT_ROOT_PASSWORD="${AGENT_ROOT_PASSWORD:-}"
+
+require_env() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -z "$value" ]; then
+        echo "[ERROR] $name is required" >&2
+        exit 1
+    fi
+}
+
+require_env AGENT_TOKEN
+require_env AGENT_ROOT_PASSWORD
 
 echo "========================================"
 echo "  SSH Jump Agent - Docker"
@@ -18,6 +31,7 @@ echo "[INFO] Server: $SERVER_HOST:$SERVER_PORT"
 echo "========================================"
 
 # 启动本地的 SSH 服务（模拟目标服务器）
+echo "root:${AGENT_ROOT_PASSWORD}" | chpasswd
 echo "[INFO] 启动本地 SSH 服务..."
 /usr/sbin/sshd
 

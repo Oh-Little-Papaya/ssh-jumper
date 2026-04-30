@@ -21,8 +21,6 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
-#include <array>
-#include <sys/wait.h>
 #include <sys/stat.h>
 
 #include <nlohmann/json.hpp>
@@ -86,56 +84,6 @@ std::string sanitizeTmuxComponent(const std::string& value) {
         }
     }
     return sanitized.empty() ? "unknown" : sanitized;
-}
-
-bool runCommandCapture(const std::vector<std::string>& args,
-                       std::string& output,
-                       int& exitCode) {
-    output.clear();
-    exitCode = -1;
-    if (args.empty()) {
-        return false;
-    }
-
-    std::string command;
-    for (const auto& arg : args) {
-        if (!command.empty()) {
-            command.push_back(' ');
-        }
-        // 仅允许安全字符，避免 shell 注入
-        bool safe = true;
-        for (char ch : arg) {
-            if (!(std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_' || ch == '.' || ch == ':' || ch == '+' || ch == '/' )) {
-                safe = false;
-                break;
-            }
-        }
-        if (!safe) {
-            return false;
-        }
-        command.append(arg);
-    }
-
-    FILE* pipe = popen(command.c_str(), "r");
-    if (!pipe) {
-        return false;
-    }
-
-    std::array<char, 256> buffer{};
-    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe)) {
-        output.append(buffer.data());
-    }
-
-    int status = pclose(pipe);
-    if (status == -1) {
-        return false;
-    }
-    if (WIFEXITED(status)) {
-        exitCode = WEXITSTATUS(status);
-        return true;
-    }
-    exitCode = status;
-    return false;
 }
 
 } // namespace
@@ -374,6 +322,20 @@ bool SSHClient::openShell() {
     return true;
 }
 
+bool SSHClient::executeInteractiveCommand(const std::string& command) {
+    if (!channel_ || command.empty()) {
+        return false;
+    }
+
+    int ret = ssh_channel_request_exec(channel_, command.c_str());
+    if (ret != SSH_OK) {
+        LOG_ERROR("Failed to execute interactive command: " + std::string(ssh_get_error(session_)));
+        return false;
+    }
+
+    return true;
+}
+
 bool SSHClient::executeCommand(const std::string& command, std::string& output, int* exitStatus) {
     output.clear();
     if (exitStatus) {
@@ -398,7 +360,7 @@ bool SSHClient::executeCommand(const std::string& command, std::string& output, 
     }
 
     char buffer[DEFAULT_BUFFER_SIZE];
-    for (;) {
+    while (true) {
         int n = ssh_channel_read(execChannel, buffer, sizeof(buffer), 0);
         if (n > 0) {
             output.append(buffer, n);
@@ -844,12 +806,9 @@ bool InteractiveSession::tryAttachTmuxSession() {
 
         sendToUser("\r\n\033[90m尝试接管最近会话: " + asset.hostname + " ...\033[0m\r\n");
 
-        setenv("SSHJUMP_TMUX_ATTACH", "1", 1);
         if (connectToAsset(asset)) {
-            unsetenv("SSHJUMP_TMUX_ATTACH");
             return true;
         }
-        unsetenv("SSHJUMP_TMUX_ATTACH");
     }
 
     return false;
@@ -1225,25 +1184,9 @@ bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
         return false;
     }
     
-    // 请求 PTY
-    if (!targetClient->requestPty("xterm", 80, 24)) {
-        sendToUser("\r\n\033[31m连接失败: 无法分配终端\033[0m\r\n");
-        targetClient->disconnect();
-        state_ = SessionState::MENU;
-        return false;
-    }
-    
-    // 打开 Shell
-    if (!targetClient->openShell()) {
-        sendToUser("\r\n\033[31m连接失败: 无法打开 Shell\033[0m\r\n");
-        targetClient->disconnect();
-        state_ = SessionState::MENU;
-        return false;
-    }
-
-    // 如果开启 tmux 会话接管，确保目标端进入 tmux
     const auto config = ConfigManager::getInstance().getServerConfig();
-    const bool tmuxAttach = (std::getenv("SSHJUMP_TMUX_ATTACH") != nullptr);
+    bool useTmux = false;
+    std::string tmuxSessionName;
     if (config.tmux.enabled) {
         auto conn = connection_.lock();
         if (conn) {
@@ -1251,24 +1194,45 @@ bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
             const std::string safeUser = sanitizeTmuxComponent(username_);
             const std::string safeAsset = sanitizeTmuxComponent(asset.id.empty() ? asset.hostname : asset.id);
             const std::string safeIp = sanitizeTmuxComponent(conn->getClientIp());
-            const std::string sessionName = prefix + "-" + safeUser + "-" + safeAsset + "-" + safeIp;
-
-            if (tmuxAttach) {
-                // 直接接管已存在的 tmux 会话
-                std::string tmuxCmd = "tmux attach -t " + sessionName;
-                targetClient->write(tmuxCmd.c_str(), tmuxCmd.size());
-                targetClient->write("\n", 1);
-            } else {
-                // 新建或恢复会话
-                int exitStatus = -1;
-                std::string tmuxCheckOutput;
-                if (targetClient->executeCommand("command -v tmux", tmuxCheckOutput, &exitStatus) && exitStatus == 0) {
-                    std::string tmuxCmd = "tmux new-session -A -s " + sessionName;
-                    targetClient->write(tmuxCmd.c_str(), tmuxCmd.size());
-                    targetClient->write("\n", 1);
-                }
-            }
+            tmuxSessionName = prefix + "-" + safeUser + "-" + safeAsset + "-" + safeIp;
+            useTmux = true;
         }
+    }
+
+    if (useTmux) {
+        int exitStatus = -1;
+        std::string tmuxCheckOutput;
+        if (!targetClient->executeCommand("command -v tmux", tmuxCheckOutput, &exitStatus) ||
+            exitStatus != 0) {
+            sendToUser("\r\n\033[31m连接失败: 目标主机未安装 tmux\033[0m\r\n");
+            targetClient->disconnect();
+            state_ = SessionState::MENU;
+            return false;
+        }
+    }
+
+    // 请求 PTY
+    if (!targetClient->requestPty("xterm", 80, 24)) {
+        sendToUser("\r\n\033[31m连接失败: 无法分配终端\033[0m\r\n");
+        targetClient->disconnect();
+        state_ = SessionState::MENU;
+        return false;
+    }
+
+    if (useTmux) {
+        const std::string tmuxCmd = "exec tmux new-session -A -s " + tmuxSessionName;
+        if (!targetClient->executeInteractiveCommand(tmuxCmd)) {
+            sendToUser("\r\n\033[31m连接失败: 无法启动 tmux 会话\033[0m\r\n");
+            targetClient->disconnect();
+            state_ = SessionState::MENU;
+            return false;
+        }
+        LOG_INFO("Started tmux session on target: " + tmuxSessionName);
+    } else if (!targetClient->openShell()) {
+        sendToUser("\r\n\033[31m连接失败: 无法打开 Shell\033[0m\r\n");
+        targetClient->disconnect();
+        state_ = SessionState::MENU;
+        return false;
     }
 
     // 设置非阻塞模式（对 DataBridge 很重要！）

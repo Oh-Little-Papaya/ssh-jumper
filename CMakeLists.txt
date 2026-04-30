@@ -102,18 +102,6 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(json)
 
-# 检查 io_uring 支持
-include(CheckIncludeFileCXX)
-check_include_file_cxx("liburing.h" HAS_IO_URING_H)
-if(HAS_IO_URING_H)
-    find_library(IO_URING_LIB uring)
-    if(IO_URING_LIB)
-        set(HAS_IO_URING TRUE)
-        add_definitions(-DHAS_IO_URING)
-        message(STATUS "io_uring library detected (event loop backend currently falls back to epoll)")
-    endif()
-endif()
-
 # 头文件目录
 include_directories(
     ${CMAKE_SOURCE_DIR}/include
@@ -145,79 +133,63 @@ add_library(sshjump_static STATIC ${COMMON_SOURCES})
 target_link_libraries(sshjump_static
     PUBLIC
         ${LIBSSH_LIBRARIES}
-        ${OPENSSL_LIBRARIES}
+        OpenSSL::Crypto
         Threads::Threads
         nlohmann_json::nlohmann_json
 )
 
+# 子节点管理工具只需要 registry，不应拖入完整 SSH/Cluster 实现。
+add_library(sshjump_node_registry STATIC src/node_registry.cpp)
+target_link_libraries(sshjump_node_registry PUBLIC Threads::Threads)
+
 if(FOLLY_ENABLED)
     target_compile_definitions(sshjump_static PUBLIC SSHJUMP_USE_FOLLY)
+    target_compile_definitions(sshjump_node_registry PUBLIC SSHJUMP_USE_FOLLY)
     if(FOLLY_USING_TARGET)
         target_link_libraries(sshjump_static PUBLIC ${FOLLY_TARGET_NAME})
+        target_link_libraries(sshjump_node_registry PUBLIC ${FOLLY_TARGET_NAME})
     else()
         if(FOLLY_INCLUDE_DIRS)
             target_include_directories(sshjump_static PUBLIC ${FOLLY_INCLUDE_DIRS})
+            target_include_directories(sshjump_node_registry PUBLIC ${FOLLY_INCLUDE_DIRS})
         endif()
         if(FOLLY_LIBRARY_DIRS)
             target_link_directories(sshjump_static PUBLIC ${FOLLY_LIBRARY_DIRS})
+            target_link_directories(sshjump_node_registry PUBLIC ${FOLLY_LIBRARY_DIRS})
         endif()
         target_link_libraries(sshjump_static PUBLIC ${FOLLY_LIBRARIES})
+        target_link_libraries(sshjump_node_registry PUBLIC ${FOLLY_LIBRARIES})
     endif()
-endif()
-
-if(HAS_IO_URING)
-    target_link_libraries(sshjump_static PUBLIC ${IO_URING_LIB})
 endif()
 
 # SSH 服务器可执行文件
 add_executable(ssh_jump_server src/main.cpp)
 target_link_libraries(ssh_jump_server
     sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
 )
-
-if(HAS_IO_URING)
-    target_link_libraries(ssh_jump_server ${IO_URING_LIB})
-endif()
 
 # Agent 客户端可执行文件
 add_executable(ssh_jump_agent src/agent_main.cpp)
 target_link_libraries(ssh_jump_agent
     sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
 )
-
-if(HAS_IO_URING)
-    target_link_libraries(ssh_jump_agent ${IO_URING_LIB})
-endif()
 
 # 用户管理工具
 add_executable(ssh_jump_user_tool src/user_tool.cpp)
 target_link_libraries(ssh_jump_user_tool
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
+    OpenSSL::Crypto
 )
 
 # 子节点管理工具（CRUD）
 add_executable(ssh_jump_node_tool src/node_tool.cpp)
 target_link_libraries(ssh_jump_node_tool
-    sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
+    sshjump_node_registry
 )
 
 # 集群管理工具（运行时用户+节点 CRUD）
 add_executable(ssh_jump_cluster_admin_tool src/cluster_admin_tool.cpp)
 target_link_libraries(ssh_jump_cluster_admin_tool
     sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
 )
 
 # 单元测试
@@ -256,14 +228,7 @@ set(UNIT_TEST_SOURCES
 add_executable(ssh_jump_tests ${UNIT_TEST_SOURCES})
 target_link_libraries(ssh_jump_tests
     sshjump_static
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    Threads::Threads
 )
-
-if(HAS_IO_URING)
-    target_link_libraries(ssh_jump_tests ${IO_URING_LIB})
-endif()
 
 # 添加单元测试
 add_test(NAME UnitTests COMMAND ssh_jump_tests)
@@ -275,18 +240,18 @@ set(FUNC_TEST_SOURCES
 
 add_executable(ssh_jump_func_tests ${FUNC_TEST_SOURCES})
 target_link_libraries(ssh_jump_func_tests
-    ${LIBSSH_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
     Threads::Threads
 )
-
-if(HAS_IO_URING)
-    target_link_libraries(ssh_jump_func_tests ${IO_URING_LIB})
-endif()
 
 set_target_properties(ssh_jump_func_tests PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
+)
+
+add_test(NAME FunctionalTests COMMAND ssh_jump_func_tests)
+set_tests_properties(FunctionalTests PROPERTIES
+    LABELS "functional"
+    TIMEOUT 180
 )
 
 # 安装目标
@@ -309,7 +274,6 @@ message(STATUS "=== SSH Jump Server Build Configuration ===")
 message(STATUS "Version: ${PROJECT_VERSION}")
 message(STATUS "C++ Standard: ${CMAKE_CXX_STANDARD}")
 message(STATUS "Build Type: ${CMAKE_BUILD_TYPE}")
-message(STATUS "io_uring Library Detected: ${HAS_IO_URING}")
 message(STATUS "Folly Support: ${FOLLY_ENABLED}")
 if(LIBSSH_VERSION)
     message(STATUS "libssh: ${LIBSSH_VERSION}")

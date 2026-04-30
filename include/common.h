@@ -44,10 +44,6 @@
 #include <netdb.h>
 #include <signal.h>
 
-// libssh
-#include <libssh/libssh.h>
-#include <libssh/server.h>
-
 namespace sshjump {
 
 // 版本信息
@@ -112,7 +108,7 @@ enum class LogLevel {
 };
 
 // 全局日志级别
-extern std::atomic<LogLevel> g_logLevel;
+inline std::atomic<LogLevel> g_logLevel{LogLevel::INFO};
 
 // 日志消息净化函数 - 防止日志注入攻击
 inline std::string sanitizeLogMessage(const std::string& msg) {

@@ -11,9 +11,6 @@
 
 namespace sshjump {
 
-// 全局日志级别已在 config_manager.cpp 中定义
-// extern std::atomic<LogLevel> g_logLevel;
-
 bool timingSafeEqual(const std::string& a, const std::string& b) {
     if (a.size() != b.size()) {
         return false;

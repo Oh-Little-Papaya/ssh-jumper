@@ -9,6 +9,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
+if [ -f "$PROJECT_DIR/.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "$PROJECT_DIR/.env"
+    set +a
+fi
+
+JUMP_USER="${JUMP_USER:-admin}"
+DEVELOPER_USER="${DEVELOPER_USER:-developer}"
+OPS_USER="${OPS_USER:-ops}"
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -133,13 +144,13 @@ main() {
                 show_logs
                 ;;
             5)
-                test_connect "admin" "admin123"
+                test_connect "$JUMP_USER" "${JUMP_PASS:?Set JUMP_PASS}"
                 ;;
             6)
-                test_connect "developer" "dev123"
+                test_connect "$DEVELOPER_USER" "${DEVELOPER_PASS:?Set DEVELOPER_PASS}"
                 ;;
             7)
-                test_connect "ops" "ops123"
+                test_connect "$OPS_USER" "${OPS_PASS:?Set OPS_PASS}"
                 ;;
             8)
                 enter_container

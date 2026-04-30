@@ -1,23 +1,17 @@
 build/
+build-*/
 build_nosys/
 build_verify/
 cmake-build-*/
 CMakeCache.txt
 CMakeFiles/
+.git/
 *.o
 *.a
 *.so
 *.log
 
-# Local build/review directories
-build-*/
-
-# Generated binaries and runtime secrets
-ssh_jump_server
-ssh_jump_agent
-ssh_jump_user_tool
-ssh_jump_node_tool
-ssh_jump_cluster_admin_tool
+# Do not send generated binaries or runtime secrets to Docker builds.
 docker/ssh_jump_*
 docker/server-config/ssh_jump_*
 docker/server-config/host_key*

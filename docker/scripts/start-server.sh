@@ -7,14 +7,28 @@ AGENT_PORT="${AGENT_PORT:-8888}"
 SSH_LISTEN_ADDRESS="${SSH_LISTEN_ADDRESS:-0.0.0.0}"
 CLUSTER_LISTEN_ADDRESS="${CLUSTER_LISTEN_ADDRESS:-0.0.0.0}"
 DEFAULT_TARGET_USER="${DEFAULT_TARGET_USER:-root}"
-DEFAULT_TARGET_PASSWORD="${DEFAULT_TARGET_PASSWORD:-agent123}"
+DEFAULT_TARGET_PASSWORD="${DEFAULT_TARGET_PASSWORD:-}"
 DEFAULT_TARGET_PRIVATE_KEY="${DEFAULT_TARGET_PRIVATE_KEY:-}"
 DEFAULT_TARGET_KEY_PASSWORD="${DEFAULT_TARGET_KEY_PASSWORD:-}"
 MAX_CONNECTIONS_PER_MINUTE="${MAX_CONNECTIONS_PER_MINUTE:-120}"
 
-SERVER_USERS="${SERVER_USERS:-admin:admin123,developer:dev123,ops:ops123}"
-CLUSTER_SHARED_TOKEN="${CLUSTER_SHARED_TOKEN:-cluster-secret-token}"
+SERVER_USERS="${SERVER_USERS:-}"
+CLUSTER_SHARED_TOKEN="${CLUSTER_SHARED_TOKEN:-}"
+ADMIN_TOKEN="${ADMIN_TOKEN:-}"
 SERVER_CHILD_NODES="${SERVER_CHILD_NODES:-public-mgr-01:jump-server:2222:8888:public-mgr-01}"
+
+require_env() {
+    local name="$1"
+    local value="${!name:-}"
+    if [ -z "$value" ]; then
+        echo "[ERROR] $name is required" >&2
+        exit 1
+    fi
+}
+
+require_env SERVER_USERS
+require_env CLUSTER_SHARED_TOKEN
+require_env ADMIN_TOKEN
 
 echo "========================================"
 echo "  SSH Jump Server - Docker"
@@ -32,8 +46,9 @@ echo "[INFO] 日志目录: $LOG_DIR"
 echo "[INFO] SSH 端口: $SSH_PORT"
 echo "[INFO] Agent 端口: $AGENT_PORT"
 echo ""
-echo "[INFO] 用户参数: $SERVER_USERS"
-echo "[INFO] 共享 Token: $CLUSTER_SHARED_TOKEN"
+echo "[INFO] 用户参数: 已从 SERVER_USERS 加载"
+echo "[INFO] 共享 Token: 已从 CLUSTER_SHARED_TOKEN 加载"
+echo "[INFO] 管理 Token: 已从 ADMIN_TOKEN 加载"
 echo "[INFO] 权限策略: 所有用户默认可访问全部资产"
 echo "[INFO] 子节点参数: $SERVER_CHILD_NODES"
 echo ""
@@ -68,6 +83,7 @@ append_csv_option() {
 
 append_csv_option "--user" "$SERVER_USERS"
 SERVER_CMD+=(--token "$CLUSTER_SHARED_TOKEN")
+SERVER_CMD+=(--admin-token "$ADMIN_TOKEN")
 append_csv_option "--child-node" "$SERVER_CHILD_NODES"
 
 if [ -n "$DEFAULT_TARGET_PASSWORD" ]; then
