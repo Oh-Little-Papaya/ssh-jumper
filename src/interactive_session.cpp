@@ -806,7 +806,7 @@ bool InteractiveSession::tryAttachTmuxSession() {
 
         sendToUser("\r\n\033[90m尝试接管最近会话: " + asset.hostname + " ...\033[0m\r\n");
 
-        if (connectToAsset(asset)) {
+        if (connectToAsset(asset, true)) {
             return true;
         }
     }
@@ -1134,7 +1134,7 @@ std::vector<AssetInfo> InteractiveSession::parseUserInput(const std::string& inp
     return matches;
 }
 
-bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
+bool InteractiveSession::connectToAsset(const AssetInfo& asset, bool requireTmux) {
     state_ = SessionState::CONNECTING;
     
     sendToUser("\r\n正在连接到 \033[1;33m" + asset.hostname + "\033[0m (" + asset.ipAddress + ")...\r\n");
@@ -1204,10 +1204,16 @@ bool InteractiveSession::connectToAsset(const AssetInfo& asset) {
         std::string tmuxCheckOutput;
         if (!targetClient->executeCommand("command -v tmux", tmuxCheckOutput, &exitStatus) ||
             exitStatus != 0) {
-            sendToUser("\r\n\033[31m连接失败: 目标主机未安装 tmux\033[0m\r\n");
-            targetClient->disconnect();
-            state_ = SessionState::MENU;
-            return false;
+            if (requireTmux) {
+                sendToUser("\r\n\033[33m无法接管: 目标主机未安装 tmux\033[0m\r\n");
+                targetClient->disconnect();
+                state_ = SessionState::MENU;
+                return false;
+            }
+
+            sendToUser("\r\n\033[33m目标主机未安装 tmux，已降级为普通 Shell 会话\033[0m\r\n");
+            LOG_WARN("Tmux enabled but not installed on target, fallback to shell: " + asset.hostname);
+            useTmux = false;
         }
     }
 

@@ -205,7 +205,7 @@ private:
                                           const std::vector<AssetInfo>& assets);
     
     // 连接到指定资产
-    bool connectToAsset(const AssetInfo& asset);
+    bool connectToAsset(const AssetInfo& asset, bool requireTmux = false);
     
     // 发送数据到用户
     void sendToUser(const std::string& data);
