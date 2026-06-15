@@ -33,6 +33,7 @@ ssh_jump_server \
   --cluster-listen-address 0.0.0.0 \
   --token <cluster-token> \
   --admin-token <admin-token> \
+  --host-key-path /etc/ssh_jump/host_key \
   --user admin:Admin123! \
   --default-target-user root
 ```
@@ -40,6 +41,7 @@ ssh_jump_server \
 说明：
 - `--token` 仅用于 Agent 注册认证。
 - `--admin-token` 仅用于运行时管理接口认证（`ssh_jump_cluster_admin_tool`）。
+- `--host-key-path` 指向持久化 SSH 主机密钥；如文件不存在，服务端会自动生成并设置为 `0600`。
 - 启动时必须通过 `--user` 或 `--user-hash` 提供至少一个账户，不再自动创建历史默认弱口令账户。
 - 默认不限制连接并发；如需限流可设置 `--max-connections-per-minute <n>`。
 

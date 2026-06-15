@@ -51,6 +51,7 @@ void printUsage(const char* program) {
               << "      --user-hash <name:hash>            Add user hash from CLI (repeatable)\n"
               << "      --token <token>                    Shared cluster token for all agents\n"
               << "      --admin-token <token>              Admin API token (for cluster admin tool)\n"
+              << "      --host-key-path <path>             Persistent SSH host key path\n"
               << "      --users-file <path>                Persisted users file (default: /etc/ssh_jump/users.conf)\n"
               << "      --agent-token-file <path>          Persisted agent token file (default: /etc/ssh_jump/agent_tokens.conf)\n"
               << "      --child-node <id:addr[:ssh[:cluster[:name]]]> Add child node from CLI (repeatable, IPv6 use [addr])\n"
@@ -270,39 +271,71 @@ bool generateAndExportHostKey(enum ssh_keytypes_e keyType, int bits, const std::
     return true;
 }
 
-bool generateEphemeralHostKeys(std::string& hostKeyPath, std::string& hostKeyDir) {
-    char dirTemplate[] = "/tmp/ssh_jump_hostkey_XXXXXX";
-    char* dir = mkdtemp(dirTemplate);
-    if (!dir) {
+std::string defaultHostKeyPath() {
+    if (::geteuid() == 0) {
+        return SSHConfig().hostKeyPath;
+    }
+
+    const char* stateHome = std::getenv("XDG_STATE_HOME");
+    if (stateHome && stateHome[0] != '\0') {
+        return std::string(stateHome) + "/ssh_jump/host_key";
+    }
+
+    const char* home = std::getenv("HOME");
+    if (home && home[0] != '\0') {
+        return std::string(home) + "/.local/state/ssh_jump/host_key";
+    }
+
+    return "/tmp/ssh_jump_" + std::to_string(::getuid()) + "/host_key";
+}
+
+bool isUsableRegularFile(const std::string& path) {
+    std::error_code ec;
+    return fs::exists(path, ec) && fs::is_regular_file(path, ec) &&
+           fs::file_size(path, ec) > 0;
+}
+
+bool ensurePersistentHostKeys(const std::string& hostKeyPath) {
+    if (hostKeyPath.empty()) {
+        LOG_ERROR("Host key path is empty");
         return false;
     }
 
-    hostKeyDir = dir;
-    hostKeyPath = hostKeyDir + "/host_key";
-
-    if (!generateAndExportHostKey(SSH_KEYTYPE_RSA, 3072, hostKeyPath)) {
-        return false;
+    std::error_code ec;
+    const fs::path keyPath(hostKeyPath);
+    const fs::path parentPath = keyPath.parent_path();
+    if (!parentPath.empty()) {
+        fs::create_directories(parentPath, ec);
+        if (ec) {
+            LOG_ERROR("Failed to create host key directory: " +
+                      parentPath.string() + ", err=" + ec.message());
+            return false;
+        }
+        chmod(parentPath.c_str(), 0700);
     }
 
-    // ECDSA 可选，失败仅降级，不影响启动
+    if (!isUsableRegularFile(hostKeyPath)) {
+        LOG_INFO("Generating persistent RSA host key: " + hostKeyPath);
+        if (!generateAndExportHostKey(SSH_KEYTYPE_RSA, 3072, hostKeyPath)) {
+            LOG_ERROR("Failed to generate RSA host key: " + hostKeyPath);
+            return false;
+        }
+    } else {
+        chmod(hostKeyPath.c_str(), 0600);
+    }
+
     const std::string ecdsaKeyPath = hostKeyPath + "_ecdsa";
-    if (!generateAndExportHostKey(SSH_KEYTYPE_ECDSA, 521, ecdsaKeyPath)) {
-        LOG_WARN("Failed to generate optional ECDSA host key, fallback to RSA only");
+    if (!isUsableRegularFile(ecdsaKeyPath)) {
+        LOG_INFO("Generating persistent ECDSA host key: " + ecdsaKeyPath);
+        if (!generateAndExportHostKey(SSH_KEYTYPE_ECDSA, 521, ecdsaKeyPath)) {
+            LOG_WARN("Failed to generate optional ECDSA host key, fallback to RSA only");
+        }
+    } else {
+        chmod(ecdsaKeyPath.c_str(), 0600);
     }
 
     return true;
 }
-
-struct TempPathGuard {
-    std::string path;
-    ~TempPathGuard() {
-        if (path.empty()) {
-            return;
-        }
-        std::error_code ec;
-        std::filesystem::remove_all(path, ec);
-    }
-};
 
 int main(int argc, char* argv[]) {
     // 默认配置（纯命令行参数驱动）
@@ -310,8 +343,7 @@ int main(int argc, char* argv[]) {
     int agentPort = DEFAULT_CLUSTER_PORT;
     std::string sshListenAddr = "0.0.0.0";
     std::string clusterListenAddr = "0.0.0.0";
-    std::string hostKeyPath;
-    TempPathGuard generatedHostKeyGuard;
+    std::string hostKeyPath = defaultHostKeyPath();
     std::vector<std::pair<std::string, std::string>> cliUsers;
     std::vector<std::pair<std::string, std::string>> cliUsersHash;
     std::string sharedClusterToken;
@@ -341,6 +373,7 @@ int main(int argc, char* argv[]) {
         OPT_USER_HASH,
         OPT_SHARED_TOKEN,
         OPT_ADMIN_TOKEN,
+        OPT_HOST_KEY_PATH,
         OPT_CHILD_NODE,
         OPT_DEFAULT_TARGET_USER,
         OPT_DEFAULT_TARGET_PASSWORD,
@@ -368,6 +401,7 @@ int main(int argc, char* argv[]) {
         {"user-hash", required_argument, nullptr, OPT_USER_HASH},
         {"token", required_argument, nullptr, OPT_SHARED_TOKEN},
         {"admin-token", required_argument, nullptr, OPT_ADMIN_TOKEN},
+        {"host-key-path", required_argument, nullptr, OPT_HOST_KEY_PATH},
         {"users-file", required_argument, nullptr, OPT_USERS_FILE},
         {"agent-token-file", required_argument, nullptr, OPT_AGENT_TOKEN_FILE},
         {"child-node", required_argument, nullptr, OPT_CHILD_NODE},
@@ -438,6 +472,9 @@ int main(int argc, char* argv[]) {
                 break;
             case OPT_ADMIN_TOKEN:
                 adminApiToken = trimString(optarg);
+                break;
+            case OPT_HOST_KEY_PATH:
+                hostKeyPath = trimString(optarg);
                 break;
             case OPT_USERS_FILE:
                 usersFile = trimString(optarg);
@@ -543,12 +580,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::string generatedHostKeyDir;
-    if (!generateEphemeralHostKeys(hostKeyPath, generatedHostKeyDir)) {
-        std::cerr << "Failed to auto-generate host key" << std::endl;
+    if (!ensurePersistentHostKeys(hostKeyPath)) {
+        std::cerr << "Failed to prepare persistent host key: "
+                  << hostKeyPath << std::endl;
         return 1;
     }
-    generatedHostKeyGuard.path = generatedHostKeyDir;
     
     // 设置日志级别
     if (verbose) {

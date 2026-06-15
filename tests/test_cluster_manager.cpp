@@ -8,6 +8,72 @@
 
 using namespace sshjump;
 
+namespace {
+
+bool sendAgentMessageAndReceiveResponse(AgentMessageType type,
+                                        const std::string& payload,
+                                        AgentMessage& response) {
+    int fds[2] = {-1, -1};
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+        return false;
+    }
+
+    ClusterManager manager;
+    {
+        AgentConnection conn(fds[1], &manager);
+        if (!conn.initialize()) {
+            closeSocket(fds[0]);
+            closeSocket(fds[1]);
+            return false;
+        }
+
+        const AgentMessage request = AgentMessage::create(type, payload);
+        const auto raw = request.serialize();
+        ssize_t sent = send(fds[0], raw.data(), raw.size(), MSG_NOSIGNAL);
+        if (sent != static_cast<ssize_t>(raw.size())) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        if (conn.onRead() < 0) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        uint8_t header[9] = {0};
+        ssize_t headerRead = recv(fds[0], header, sizeof(header), MSG_WAITALL);
+        if (headerRead != static_cast<ssize_t>(sizeof(header))) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        uint32_t payloadLen = (static_cast<uint32_t>(header[5]) << 24) |
+                              (static_cast<uint32_t>(header[6]) << 16) |
+                              (static_cast<uint32_t>(header[7]) << 8) |
+                              static_cast<uint32_t>(header[8]);
+        std::vector<uint8_t> rawResponse;
+        rawResponse.insert(rawResponse.end(), header, header + sizeof(header));
+        if (payloadLen > 0) {
+            std::vector<uint8_t> responsePayload(payloadLen);
+            ssize_t payloadRead = recv(fds[0], responsePayload.data(),
+                                       responsePayload.size(), MSG_WAITALL);
+            if (payloadRead != static_cast<ssize_t>(responsePayload.size())) {
+                closeSocket(fds[0]);
+                return false;
+            }
+            rawResponse.insert(rawResponse.end(), responsePayload.begin(),
+                               responsePayload.end());
+        }
+
+        const bool ok = AgentMessage::deserialize(rawResponse.data(),
+                                                  rawResponse.size(), response);
+        closeSocket(fds[0]);
+        return ok;
+    }
+}
+
+}  // namespace
+
 // ============================================
 // ServiceInfo 测试
 // ============================================
@@ -218,6 +284,32 @@ TEST(agent_message_large_payload, "集群管理") {
     ASSERT_TRUE(result);
     ASSERT_EQ(largePayload, parsed.payload);
     
+    return true;
+}
+
+TEST(agent_connection_rejects_plaintext_register, "集群管理") {
+    AgentMessage response;
+    ASSERT_TRUE(sendAgentMessageAndReceiveResponse(
+        AgentMessageType::REGISTER,
+        "{\"agentId\":\"plain-agent\",\"authToken\":\"token\"}", response));
+
+    ASSERT_EQ(static_cast<uint8_t>(AgentMessageType::RESPONSE),
+              static_cast<uint8_t>(response.type));
+    ASSERT_TRUE(response.payload.find("ERR:Secure register payload required") == 0);
+
+    return true;
+}
+
+TEST(agent_connection_rejects_plaintext_command, "集群管理") {
+    AgentMessage response;
+    ASSERT_TRUE(sendAgentMessageAndReceiveResponse(
+        AgentMessageType::COMMAND,
+        "{\"op\":\"list_nodes\",\"adminToken\":\"token\",\"nonce\":\"n\"}", response));
+
+    ASSERT_EQ(static_cast<uint8_t>(AgentMessageType::RESPONSE),
+              static_cast<uint8_t>(response.type));
+    ASSERT_TRUE(response.payload.find("ERR:Secure command payload required") == 0);
+
     return true;
 }
 

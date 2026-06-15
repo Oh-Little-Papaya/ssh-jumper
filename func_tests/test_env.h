@@ -30,12 +30,23 @@ struct TestConfig {
     std::string adminToken = "admin-test-token";
     std::string adminUser = "admin";
     std::string adminPassword = "Admin123!";
+
+    static std::string executableDir() {
+        char path[4096] = {0};
+        const ssize_t len = readlink("/proc/self/exe", path, sizeof(path) - 1);
+        if (len <= 0) {
+            return ".";
+        }
+        path[len] = '\0';
+        return fs::path(path).parent_path().string();
+    }
     
     TestConfig() {
+        const std::string binDir = executableDir();
         workDir = "/tmp/ssh_jump_func_test";
-        serverBinary = "../build/ssh_jump_server";
-        agentBinary = "../build/ssh_jump_agent";
-        adminBinary = "../build/ssh_jump_cluster_admin_tool";
+        serverBinary = (fs::path(binDir) / "ssh_jump_server").string();
+        agentBinary = (fs::path(binDir) / "ssh_jump_agent").string();
+        adminBinary = (fs::path(binDir) / "ssh_jump_cluster_admin_tool").string();
         sshPort = 15022;        // 使用高位端口避免冲突
         clusterPort = 15088;
     }
@@ -182,6 +193,7 @@ public:
             "--cluster-listen-address", "127.0.0.1",
             "--token", config_.clusterToken,
             "--admin-token", config_.adminToken,
+            "--host-key-path", config_.workDir + "/etc/host_key",
             "--users-file", config_.workDir + "/etc/users.conf",
             "--agent-token-file", config_.workDir + "/etc/agent_tokens.conf",
             "--pid-file", config_.workDir + "/run/ssh_jump.pid",

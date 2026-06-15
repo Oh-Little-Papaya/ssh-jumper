@@ -71,7 +71,7 @@ rm -rf /tmp/ssh_jump_build
 
 ### 3. 主机密钥
 
-`ssh_jump_server` 启动时会自动生成临时主机密钥，不需要手动准备 `/etc/ssh_jump/host_key`。
+`ssh_jump_server` 使用持久化 SSH 主机密钥。默认以 root 运行时路径为 `/etc/ssh_jump/host_key`；也可以通过 `--host-key-path <path>` 指定。文件不存在时服务端会自动生成 RSA 主机密钥，并尝试生成可选的 ECDSA 主机密钥。
 
 ### 4. 准备运行参数
 
@@ -80,6 +80,7 @@ rm -rf /tmp/ssh_jump_build
 建议将运行参数固定在 systemd `ExecStart`（见下一节），至少配置：
 - `--token`（集群共享 token）
 - `--admin-token`（管理接口 token）
+- `--host-key-path`（持久化 SSH 主机密钥路径，建议固定）
 - `--user` / `--user-hash`（必填，可重复）
 - `--child-node`（可选，可重复）
 
@@ -111,7 +112,7 @@ After=network.target
 Type=simple
 User=sshjump
 Group=sshjump
-ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token <cluster-token> --admin-token <admin-token> --user admin:ChangeMe123! --default-target-user root
+ExecStart=/opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token <cluster-token> --admin-token <admin-token> --host-key-path /etc/ssh_jump/host_key --user admin:ChangeMe123! --default-target-user root
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=process
 Restart=on-failure
@@ -415,7 +416,7 @@ find /backup/ssh_jump -type d -mtime +30 -exec rm -rf {} \;
 
 ```bash
 # 前台运行，详细日志
-sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token <cluster-token> --admin-token <admin-token> --user admin:ChangeMe123! -v
+sudo -u sshjump /opt/ssh_jump/ssh_jump_server -p 2222 -a 8888 --listen-address 0.0.0.0 --cluster-listen-address 0.0.0.0 --token <cluster-token> --admin-token <admin-token> --host-key-path /etc/ssh_jump/host_key --user admin:ChangeMe123! -v
 
 # 使用 strace
 sudo strace -f -e trace=network /opt/ssh_jump/ssh_jump_server -v

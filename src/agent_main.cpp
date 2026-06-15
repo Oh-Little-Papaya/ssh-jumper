@@ -13,12 +13,12 @@
 using namespace sshjump;
 
 // 全局运行标志
-static std::atomic<bool> g_running{true};
+static volatile sig_atomic_t g_running = 1;
 
 // 信号处理
 void signalHandler(int sig) {
-    LOG_INFO("Received signal " + std::to_string(sig) + ", shutting down...");
-    g_running = false;
+    (void)sig;
+    g_running = 0;
 }
 
 // 打印帮助信息
@@ -236,7 +236,7 @@ int main(int argc, char* argv[]) {
     
     // 主循环 - 使用短 sleep 周期检查 g_running
     int checkInterval = 0;
-    while (g_running) {
+    while (g_running != 0) {
         // 每 100ms 检查一次，以便快速响应 Ctrl+C
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         checkInterval++;

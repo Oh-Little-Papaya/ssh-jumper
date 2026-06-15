@@ -582,31 +582,32 @@ void AgentConnection::handleRegister(const std::string& payload) {
   json registerJson;
   try {
     json raw = json::parse(payload);
-    if (raw.is_object() && raw.contains("secure")) {
-      const std::string agentIdHint = trimString(raw.value("agentId", ""));
-      const auto& secure = raw["secure"];
-      if (!secure.is_object()) {
-        sendResponse(false, "Invalid secure register payload");
-        return;
-      }
+    if (!raw.is_object() || !raw.contains("secure")) {
+      sendResponse(false, "Secure register payload required");
+      return;
+    }
 
-      std::string decrypted;
-      std::string tokenUsed;
-      if (!manager_ ||
-          !manager_->decryptAgentPayload(
-              agentIdHint, trimString(secure.value("iv", "")),
-              trimString(secure.value("ciphertext", "")),
-              trimString(secure.value("tag", "")), decrypted, &tokenUsed)) {
-        sendResponse(false, "Unauthorized");
-        return;
-      }
+    const std::string agentIdHint = trimString(raw.value("agentId", ""));
+    const auto& secure = raw["secure"];
+    if (!secure.is_object()) {
+      sendResponse(false, "Invalid secure register payload");
+      return;
+    }
 
-      registerJson = json::parse(decrypted);
-      if (registerJson.value("authToken", "").empty()) {
-        registerJson["authToken"] = tokenUsed;
-      }
-    } else {
-      registerJson = std::move(raw);
+    std::string decrypted;
+    std::string tokenUsed;
+    if (!manager_ ||
+        !manager_->decryptAgentPayload(
+            agentIdHint, trimString(secure.value("iv", "")),
+            trimString(secure.value("ciphertext", "")),
+            trimString(secure.value("tag", "")), decrypted, &tokenUsed)) {
+      sendResponse(false, "Unauthorized");
+      return;
+    }
+
+    registerJson = json::parse(decrypted);
+    if (registerJson.value("authToken", "").empty()) {
+      registerJson["authToken"] = tokenUsed;
     }
   } catch (const std::exception&) {
     sendResponse(false, "Invalid register payload");
@@ -684,42 +685,32 @@ void AgentConnection::handleCommand(const std::string& payload) {
     return;
   }
 
-  bool secureMode = false;
   json req;
   try {
-    if (rawReq.is_object() && rawReq.contains("secure")) {
-      const auto& secure = rawReq["secure"];
-      if (!secure.is_object()) {
-        sendResponse(false, "Invalid secure payload");
-        return;
-      }
-
-      std::string decrypted;
-      if (!manager_ || !manager_->decryptAdminPayload(
-                           trimString(secure.value("iv", "")),
-                           trimString(secure.value("ciphertext", "")),
-                           trimString(secure.value("tag", "")), decrypted)) {
-        sendResponse(false, "Unauthorized");
-        return;
-      }
-
-      req = json::parse(decrypted);
-      secureMode = true;
-    } else {
-      req = std::move(rawReq);
+    if (!rawReq.is_object() || !rawReq.contains("secure")) {
+      sendResponse(false, "Secure command payload required");
+      return;
     }
-  } catch (const std::exception&) {
-    sendResponse(false, "Invalid command payload");
-    return;
-  }
 
-  if (!secureMode) {
-    const std::string token =
-        trimString(req.value("adminToken", req.value("token", "")));
-    if (!manager_ || !manager_->validateAdminToken(token)) {
+    const auto& secure = rawReq["secure"];
+    if (!secure.is_object()) {
+      sendResponse(false, "Invalid secure payload");
+      return;
+    }
+
+    std::string decrypted;
+    if (!manager_ || !manager_->decryptAdminPayload(
+                         trimString(secure.value("iv", "")),
+                         trimString(secure.value("ciphertext", "")),
+                         trimString(secure.value("tag", "")), decrypted)) {
       sendResponse(false, "Unauthorized");
       return;
     }
+
+    req = json::parse(decrypted);
+  } catch (const std::exception&) {
+    sendResponse(false, "Invalid command payload");
+    return;
   }
 
   const int64_t requestTs = req.value("ts", static_cast<int64_t>(0));
