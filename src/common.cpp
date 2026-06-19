@@ -9,16 +9,33 @@
 #include <openssl/rand.h>
 #include <openssl/sha.h>
 
+#include <array>
+
 namespace sshjump {
 
 bool timingSafeEqual(const std::string& a, const std::string& b) {
-    if (a.size() != b.size()) {
-        return false;
-    }
-    if (a.empty()) {
+    // 先对双方各做一次 SHA256，再常量时间比较摘要。
+    // 这样无论输入长度是否相等，比较都走同一条 32 字节路径，
+    // 不再通过提前返回泄露 token/哈希长度信息。
+    if (a.empty() && b.empty()) {
         return true;
     }
-    return CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
+
+    auto sha256Hex = [](const std::string& s) -> std::array<uint8_t, SHA256_DIGEST_LENGTH> {
+        std::array<uint8_t, SHA256_DIGEST_LENGTH> digest{0};
+        if (s.empty()) {
+            // 对空输入也派生一个确定摘要，保证两边都进入同一比较路径
+            SHA256(reinterpret_cast<const unsigned char*>(""), 0, digest.data());
+        } else {
+            SHA256(reinterpret_cast<const unsigned char*>(s.data()), s.size(),
+                   digest.data());
+        }
+        return digest;
+    };
+
+    const auto da = sha256Hex(a);
+    const auto db = sha256Hex(b);
+    return CRYPTO_memcmp(da.data(), db.data(), da.size()) == 0;
 }
 
 std::string bytesToHex(const uint8_t* data, size_t len) {
@@ -66,40 +83,68 @@ bool hexToBytes(const std::string& hex, std::vector<uint8_t>& out) {
 
 namespace {
 
-bool deriveAesKeyFromToken(const std::string& token, uint8_t key[32]) {
-    if (token.empty()) {
+// 使用 PBKDF2-HMAC-SHA256 从 token 派生 AES-256 密钥。
+// 引入 per-message 随机盐，显著提高离线暴力难度（相对裸 SHA256(token)）。
+// 盐随密文一起传输，因此不是秘密，但每条消息不同，阻止预计算。
+constexpr int kAesKeyDerivationIterations = 100000;
+constexpr int kAesKeySaltLength = 16;
+
+bool deriveAesKeyFromToken(const std::string& token,
+                           const uint8_t* salt, size_t saltLen,
+                           uint8_t key[32]) {
+    if (token.empty() || !salt || saltLen == 0) {
         return false;
     }
-    return SHA256(reinterpret_cast<const unsigned char*>(token.data()),
-                  token.size(),
-                  key) != nullptr;
+    return PKCS5_PBKDF2_HMAC(token.c_str(),
+                             static_cast<int>(token.size()),
+                             salt, static_cast<int>(saltLen),
+                             kAesKeyDerivationIterations,
+                             EVP_sha256(),
+                             32, key) == 1;
+}
+
+void cleanse(std::vector<uint8_t>& buf) {
+    if (!buf.empty()) {
+        OPENSSL_cleanse(buf.data(), buf.size());
+        buf.clear();
+    }
 }
 
 } // namespace
 
 bool encryptWithTokenAesGcm(const std::string& plaintext,
                             const std::string& token,
+                            std::string& saltHex,
                             std::string& ivHex,
                             std::string& ciphertextHex,
                             std::string& tagHex) {
+    saltHex.clear();
     ivHex.clear();
     ciphertextHex.clear();
     tagHex.clear();
 
+    uint8_t salt[kAesKeySaltLength] = {0};
+    if (RAND_bytes(salt, sizeof(salt)) != 1) {
+        return false;
+    }
+
     uint8_t key[32] = {0};
-    if (!deriveAesKeyFromToken(token, key)) {
+    if (!deriveAesKeyFromToken(token, salt, sizeof(salt), key)) {
+        OPENSSL_cleanse(salt, sizeof(salt));
         return false;
     }
 
     uint8_t iv[12] = {0};
     if (RAND_bytes(iv, sizeof(iv)) != 1) {
         OPENSSL_cleanse(key, sizeof(key));
+        OPENSSL_cleanse(salt, sizeof(salt));
         return false;
     }
 
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) {
         OPENSSL_cleanse(key, sizeof(key));
+        OPENSSL_cleanse(salt, sizeof(salt));
         return false;
     }
 
@@ -120,6 +165,7 @@ bool encryptWithTokenAesGcm(const std::string& plaintext,
         EVP_EncryptFinal_ex(ctx, ciphertext.data() + outLen, &finalLen) == 1 &&
         EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, sizeof(tag), tag) == 1) {
         ciphertext.resize(static_cast<size_t>(outLen + finalLen));
+        saltHex = bytesToHex(salt, sizeof(salt));
         ivHex = bytesToHex(iv, sizeof(iv));
         ciphertextHex = bytesToHex(ciphertext.data(), ciphertext.size());
         tagHex = bytesToHex(tag, sizeof(tag));
@@ -128,29 +174,36 @@ bool encryptWithTokenAesGcm(const std::string& plaintext,
 
     EVP_CIPHER_CTX_free(ctx);
     OPENSSL_cleanse(key, sizeof(key));
+    OPENSSL_cleanse(salt, sizeof(salt));
     OPENSSL_cleanse(tag, sizeof(tag));
+    if (!ok) {
+        cleanse(ciphertext);
+    }
     return ok;
 }
 
-bool decryptWithTokenAesGcm(const std::string& ivHex,
+bool decryptWithTokenAesGcm(const std::string& saltHex,
+                            const std::string& ivHex,
                             const std::string& ciphertextHex,
                             const std::string& tagHex,
                             const std::string& token,
                             std::string& plaintext) {
     plaintext.clear();
 
+    std::vector<uint8_t> salt;
     std::vector<uint8_t> iv;
     std::vector<uint8_t> ciphertext;
     std::vector<uint8_t> tag;
-    if (!hexToBytes(ivHex, iv) || !hexToBytes(ciphertextHex, ciphertext) || !hexToBytes(tagHex, tag)) {
-        return false;
-    }
-    if (iv.size() != 12 || tag.size() != 16) {
+    if (!hexToBytes(saltHex, salt) || salt.size() != kAesKeySaltLength ||
+        !hexToBytes(ivHex, iv) || iv.size() != 12 ||
+        !hexToBytes(ciphertextHex, ciphertext) ||
+        !hexToBytes(tagHex, tag) || tag.size() != 16) {
         return false;
     }
 
     uint8_t key[32] = {0};
-    if (!deriveAesKeyFromToken(token, key)) {
+    if (!deriveAesKeyFromToken(token, salt.data(), salt.size(), key)) {
+        OPENSSL_cleanse(key, sizeof(key));
         return false;
     }
 
@@ -182,6 +235,13 @@ bool decryptWithTokenAesGcm(const std::string& ivHex,
 
     EVP_CIPHER_CTX_free(ctx);
     OPENSSL_cleanse(key, sizeof(key));
+    // 失败路径也要擦除明文缓冲，避免部分明文残留堆上
+    if (!ok) {
+        cleanse(out);
+    } else {
+        // 成功路径下 out 可能仍含 EVP_MAX_BLOCK_LENGTH 余量，擦除后再释放
+        OPENSSL_cleanse(out.data(), out.size());
+    }
     return ok;
 }
 

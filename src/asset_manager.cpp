@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <fnmatch.h>
 
+#include <nlohmann/json.hpp>
+
 namespace sshjump {
 
 // ============================================
@@ -14,16 +16,16 @@ namespace sshjump {
 // ============================================
 
 std::string AssetInfo::toJson() const {
-    // 简化的 JSON 序列化
-    std::string json = "{";
-    json += "\"id\":\"" + id + "\",";
-    json += "\"hostname\":\"" + hostname + "\",";
-    json += "\"ipAddress\":\"" + ipAddress + "\",";
-    json += "\"osType\":\"" + osType + "\",";
-    json += "\"description\":\"" + description + "\",";
-    json += "\"isOnline\":" + std::string(isOnline ? "true" : "false");
-    json += "}";
-    return json;
+    // 使用 nlohmann::json 构造，确保字段值中的特殊字符（" \ 控制字符等）
+    // 被正确转义，杜绝手动拼接字符串造成的 JSON 注入。
+    nlohmann::json j;
+    j["id"] = id;
+    j["hostname"] = hostname;
+    j["ipAddress"] = ipAddress;
+    j["osType"] = osType;
+    j["description"] = description;
+    j["isOnline"] = isOnline;
+    return j.dump();
 }
 
 AssetInfo AssetInfo::fromJson(const std::string& json) {

@@ -605,7 +605,8 @@ bool ConfigManager::verifySha256Password(const std::string& password, const std:
         ss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
     }
 
-    return ss.str() == storedHash;
+    // 使用常量时间比较，避免通过时序侧信道枚举哈希
+    return timingSafeEqual(ss.str(), storedHash);
 }
 
 std::string ConfigManager::generateSalt(size_t length) {

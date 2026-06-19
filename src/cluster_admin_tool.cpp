@@ -429,10 +429,12 @@ int main(int argc, char* argv[]) {
         req["enabled"] = enabled;
     }
 
+    std::string saltHex;
     std::string ivHex;
     std::string ciphertextHex;
     std::string tagHex;
-    if (!sshjump::encryptWithTokenAesGcm(req.dump(), adminToken, ivHex, ciphertextHex, tagHex)) {
+    if (!sshjump::encryptWithTokenAesGcm(req.dump(), adminToken, saltHex, ivHex,
+                                         ciphertextHex, tagHex)) {
         std::cerr << "Failed to encrypt command payload\n";
         return 1;
     }
@@ -440,6 +442,7 @@ int main(int argc, char* argv[]) {
     json wireReq;
     wireReq["secure"] = {
         {"alg", "AES-256-GCM"},
+        {"salt", saltHex},
         {"iv", ivHex},
         {"ciphertext", ciphertextHex},
         {"tag", tagHex}

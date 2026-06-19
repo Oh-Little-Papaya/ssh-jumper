@@ -86,6 +86,23 @@ std::string getSocketLocalIp(int fd) {
   return sockaddrToIp(reinterpret_cast<struct sockaddr*>(&localAddr));
 }
 
+// 获取对端 IP，用于反向隧道回调连接的身份校验。
+std::string getSocketPeerIp(int fd) {
+  if (fd < 0) {
+    return "";
+  }
+
+  struct sockaddr_storage peerAddr;
+  socklen_t peerLen = sizeof(peerAddr);
+  memset(&peerAddr, 0, sizeof(peerAddr));
+  if (getpeername(fd, reinterpret_cast<struct sockaddr*>(&peerAddr),
+                  &peerLen) != 0) {
+    return "";
+  }
+
+  return sockaddrToIp(reinterpret_cast<struct sockaddr*>(&peerAddr));
+}
+
 int createTcpListener(const std::string& bindHost, int bindPort,
                       int* actualPort) {
   if (actualPort) {
@@ -291,6 +308,10 @@ void bridgeSocketPair(int leftFd, int rightFd) {
   setNonBlocking(rightFd);
 
   char buffer[DEFAULT_BUFFER_SIZE];
+  // 允许累计 5 分钟（5 轮 × 60s poll 超时）无数据流动的空闲；
+  // 超过则关闭，避免长期占用 fd。
+  constexpr int kMaxIdleRounds = 5;
+  int idleRounds = 0;
 
   while (true) {
     struct pollfd pfds[2];
@@ -310,6 +331,12 @@ void bridgeSocketPair(int leftFd, int rightFd) {
     }
 
     if (ret == 0) {
+      if (++idleRounds >= kMaxIdleRounds) {
+        LOG_WARN("Bridge idle timeout (" +
+                 std::to_string(kMaxIdleRounds * 60) +
+                 "s), closing socket pair");
+        break;
+      }
       continue;
     }
 
@@ -320,6 +347,8 @@ void bridgeSocketPair(int leftFd, int rightFd) {
       break;
     }
 
+    bool dataFlowed = false;
+
     if (pfds[0].revents & POLLIN) {
       const ssize_t n = recv(leftFd, buffer, sizeof(buffer), 0);
       if (n <= 0 ||
@@ -327,6 +356,7 @@ void bridgeSocketPair(int leftFd, int rightFd) {
                               static_cast<size_t>(n), kSendTimeoutMs)) {
         break;
       }
+      dataFlowed = true;
     }
 
     if (pfds[1].revents & POLLIN) {
@@ -336,6 +366,11 @@ void bridgeSocketPair(int leftFd, int rightFd) {
                               static_cast<size_t>(n), kSendTimeoutMs)) {
         break;
       }
+      dataFlowed = true;
+    }
+
+    if (dataFlowed) {
+      idleRounds = 0;
     }
   }
 }
@@ -598,7 +633,8 @@ void AgentConnection::handleRegister(const std::string& payload) {
     std::string tokenUsed;
     if (!manager_ ||
         !manager_->decryptAgentPayload(
-            agentIdHint, trimString(secure.value("iv", "")),
+            agentIdHint, trimString(secure.value("salt", "")),
+            trimString(secure.value("iv", "")),
             trimString(secure.value("ciphertext", "")),
             trimString(secure.value("tag", "")), decrypted, &tokenUsed)) {
       sendResponse(false, "Unauthorized");
@@ -606,6 +642,17 @@ void AgentConnection::handleRegister(const std::string& payload) {
     }
 
     registerJson = json::parse(decrypted);
+    // 安全校验：解密后的 agentId 必须与 hint 一致（防止 shared token 路径下
+    // Agent A 用自己的 token 注册成 Agent B 的身份，劫持发往 B 的转发请求）。
+    const std::string decryptedAgentId =
+        trimString(registerJson.value("agentId", ""));
+    if (!agentIdHint.empty() && !decryptedAgentId.empty() &&
+        decryptedAgentId != agentIdHint) {
+      LOG_WARN("Decrypted agentId (" + decryptedAgentId +
+               ") does not match hint (" + agentIdHint + "), rejecting");
+      sendResponse(false, "Unauthorized");
+      return;
+    }
     if (registerJson.value("authToken", "").empty()) {
       registerJson["authToken"] = tokenUsed;
     }
@@ -700,6 +747,7 @@ void AgentConnection::handleCommand(const std::string& payload) {
 
     std::string decrypted;
     if (!manager_ || !manager_->decryptAdminPayload(
+                         trimString(secure.value("salt", "")),
                          trimString(secure.value("iv", "")),
                          trimString(secure.value("ciphertext", "")),
                          trimString(secure.value("tag", "")), decrypted)) {
@@ -713,16 +761,20 @@ void AgentConnection::handleCommand(const std::string& payload) {
     return;
   }
 
+  // 时间戳为必填字段。缺失或超出 ±300s 窗口均拒绝，防止缺字段绕过窗口校验后
+  // 仅靠 nonce 缓存（600s TTL）防御重放——一旦 nonce 过期即可重放。
   const int64_t requestTs = req.value("ts", static_cast<int64_t>(0));
-  if (requestTs > 0) {
-    const auto now = std::chrono::system_clock::now();
-    const int64_t nowTs =
-        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
-            .count();
-    if (requestTs < (nowTs - 300) || requestTs > (nowTs + 300)) {
-      sendResponse(false, "Request expired");
-      return;
-    }
+  if (requestTs <= 0) {
+    sendResponse(false, "Missing ts");
+    return;
+  }
+  const auto now = std::chrono::system_clock::now();
+  const int64_t nowTs =
+      std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
+          .count();
+  if (requestTs < (nowTs - 300) || requestTs > (nowTs + 300)) {
+    sendResponse(false, "Request expired");
+    return;
   }
 
   const std::string nonce = trimString(req.value("nonce", ""));
@@ -1069,7 +1121,8 @@ ClusterManager::ClusterManager()
       reverseTunnelPortEnd_(kDefaultReverseTunnelPortEnd),
       reverseTunnelRetries_(kDefaultReverseTunnelRetries),
       reverseTunnelAcceptTimeoutMs_(kDefaultTunnelAcceptTimeoutMs),
-      reverseTunnelPortCursor_(kDefaultReverseTunnelPortStart) {}
+      reverseTunnelPortCursor_(
+          static_cast<unsigned>(kDefaultReverseTunnelPortStart)) {}
 
 ClusterManager::~ClusterManager() { stop(); }
 
@@ -1157,7 +1210,7 @@ void ClusterManager::setReverseTunnelOptions(int portStart, int portEnd,
   reverseTunnelPortEnd_ = portEnd;
   reverseTunnelRetries_ = retries;
   reverseTunnelAcceptTimeoutMs_ = acceptTimeoutMs;
-  reverseTunnelPortCursor_.store(portStart);
+  reverseTunnelPortCursor_.store(static_cast<unsigned>(portStart));
 
   LOG_INFO("Reverse tunnel options updated: ports=" +
            std::to_string(reverseTunnelPortStart_) + "-" +
@@ -1462,7 +1515,8 @@ bool ClusterManager::validateAdminToken(const std::string& token) const {
   return !adminToken_.empty() && timingSafeEqual(adminToken_, token);
 }
 
-bool ClusterManager::decryptAdminPayload(const std::string& ivHex,
+bool ClusterManager::decryptAdminPayload(const std::string& saltHex,
+                                         const std::string& ivHex,
                                          const std::string& ciphertextHex,
                                          const std::string& tagHex,
                                          std::string& plaintext) const {
@@ -1470,11 +1524,12 @@ bool ClusterManager::decryptAdminPayload(const std::string& ivHex,
   if (adminToken_.empty()) {
     return false;
   }
-  return decryptWithTokenAesGcm(ivHex, ciphertextHex, tagHex, adminToken_,
-                                plaintext);
+  return decryptWithTokenAesGcm(saltHex, ivHex, ciphertextHex, tagHex,
+                                adminToken_, plaintext);
 }
 
 bool ClusterManager::decryptAgentPayload(const std::string& agentIdHint,
+                                         const std::string& saltHex,
                                          const std::string& ivHex,
                                          const std::string& ciphertextHex,
                                          const std::string& tagHex,
@@ -1487,7 +1542,7 @@ bool ClusterManager::decryptAgentPayload(const std::string& agentIdHint,
       return false;
     }
     std::string decrypted;
-    if (!decryptWithTokenAesGcm(ivHex, ciphertextHex, tagHex, token,
+    if (!decryptWithTokenAesGcm(saltHex, ivHex, ciphertextHex, tagHex, token,
                                 decrypted)) {
       return false;
     }
@@ -1741,6 +1796,25 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
       connectBackHost = listenAddr_;
     }
 
+    // Agent 控制连接的对端 IP，用于校验回拨连接确实来自该 Agent。
+    const std::string expectedPeerIp =
+        getSocketPeerIp(controlConn->getFd());
+
+    // 若无法确定非通配的回拨地址，则跳过反向隧道：
+    // (1) Agent 无法连接到 0.0.0.0；
+    // (2) 在通配地址上 bind 会把回调端口短暂暴露给整个网络，
+    //     任何能访问该端口的攻击者都可抢在 Agent 之前连上劫持隧道。
+    const bool reverseTunnelAvailable =
+        !connectBackHost.empty() && !isWildcardAddress(connectBackHost) &&
+        !expectedPeerIp.empty();
+
+    if (!reverseTunnelAvailable) {
+      LOG_WARN("Skip reverse tunnel for agent " + agentId +
+               ": cannot determine non-wildcard callback address"
+               " (connectBackHost=" + connectBackHost +
+               ", peerIp=" + expectedPeerIp + "), fallback=direct_connect");
+    }
+
     const int configuredRange =
         reverseTunnelPortEnd_ - reverseTunnelPortStart_ + 1;
     const int portRangeSize = configuredRange > 0 ? configuredRange : 1;
@@ -1749,18 +1823,18 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
     bool reverseTunnelEstablished = false;
     std::string lastReverseFailure = "unknown";
 
-    for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
-      const int sequence = reverseTunnelPortCursor_.fetch_add(1);
-      int offset = (sequence - reverseTunnelPortStart_) % portRangeSize;
-      if (offset < 0) {
-        offset += portRangeSize;
-      }
-      const int preferredPort = reverseTunnelPortStart_ + offset;
+    for (int attempt = 1;
+         reverseTunnelAvailable && attempt <= maxAttempts; ++attempt) {
+      const unsigned sequence = reverseTunnelPortCursor_.fetch_add(1);
+      // 无符号算术自动处理回绕；portRangeSize 已确保 > 0。
+      const unsigned offset =
+          (sequence - static_cast<unsigned>(reverseTunnelPortStart_)) %
+          static_cast<unsigned>(portRangeSize);
+      const int preferredPort =
+          reverseTunnelPortStart_ + static_cast<int>(offset);
 
-      std::string bindHost = connectBackHost;
-      if (isWildcardAddress(bindHost)) {
-        bindHost.clear();
-      }
+      // bindHost 已确保非通配（reverseTunnelAvailable 校验过）
+      const std::string& bindHost = connectBackHost;
 
       int listenFd = -1;
       int connectBackPort = 0;
@@ -1780,9 +1854,7 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
       payload += "\"targetHost\":\"127.0.0.1\",";
       payload += "\"targetPort\":" + std::to_string(targetPort) + ",";
       payload += "\"connectBackPort\":" + std::to_string(connectBackPort);
-      if (!connectBackHost.empty() && !isWildcardAddress(connectBackHost)) {
-        payload += ",\"connectBackHost\":\"" + connectBackHost + "\"";
-      }
+      payload += ",\"connectBackHost\":\"" + connectBackHost + "\"";
       payload += "}";
 
       const AgentMessage request =
@@ -1801,8 +1873,28 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
       struct pollfd pfd{listenFd, POLLIN, 0};
       const int pollRet = poll(&pfd, 1, reverseTunnelAcceptTimeoutMs_);
       if (pollRet > 0 && (pfd.revents & POLLIN)) {
-        const int tunnelFd = accept4(listenFd, nullptr, nullptr, SOCK_CLOEXEC);
+        // 捕获对端地址，校验确实来自该 Agent 控制连接的对端 IP，
+        // 防止攻击者抢连回调端口劫持隧道。
+        struct sockaddr_storage tunnelPeer;
+        socklen_t tunnelPeerLen = sizeof(tunnelPeer);
+        memset(&tunnelPeer, 0, sizeof(tunnelPeer));
+        int tunnelFd =
+            accept4(listenFd, reinterpret_cast<struct sockaddr*>(&tunnelPeer),
+                    &tunnelPeerLen, SOCK_CLOEXEC);
         if (tunnelFd >= 0) {
+          const std::string actualPeerIp = sockaddrToIp(
+              reinterpret_cast<struct sockaddr*>(&tunnelPeer));
+          if (!expectedPeerIp.empty() &&
+              (!actualPeerIp.empty() && actualPeerIp != expectedPeerIp)) {
+            LOG_ERROR("Reverse tunnel rejected: peer " + actualPeerIp +
+                      " does not match agent " + agentId +
+                      " control connection peer " + expectedPeerIp +
+                      ", requestId=" + requestId);
+            closeSocket(tunnelFd);
+            closeSocket(listenFd);
+            lastReverseFailure = "peer_mismatch";
+            continue;
+          }
           setTcpNoDelay(tunnelFd);
           closeSocket(listenFd);
           reverseTunnelEstablished = true;
@@ -1810,7 +1902,8 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
                    ", requestId=" + requestId +
                    ", attempt=" + std::to_string(attempt) +
                    ", callbackPort=" + std::to_string(connectBackPort) +
-                   ", targetPort=" + std::to_string(targetPort));
+                   ", targetPort=" + std::to_string(targetPort) +
+                   ", peer=" + actualPeerIp);
           return tunnelFd;
         }
         lastReverseFailure = "accept_failed";
@@ -1838,7 +1931,7 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
       closeSocket(listenFd);
     }
 
-    if (!reverseTunnelEstablished) {
+    if (!reverseTunnelEstablished && reverseTunnelAvailable) {
       LOG_WARN("Reverse tunnel exhausted for agent " + agentId +
                ", retries=" + std::to_string(maxAttempts) + ", lastFailure=" +
                lastReverseFailure + ", fallback=direct_connect");
@@ -1896,19 +1989,43 @@ void ClusterManager::acceptConnection() {
       break;
     }
 
+    // 在 stop() 进行中时不再接纳新连接，避免出现“已入 pendingConnections_
+    // 但 stop() 已清空映射 → 随后 addHandler 在已关闭 fd 上注册”的竞态。
+    if (!running_) {
+      closeSocket(clientFd);
+      break;
+    }
+
     // 创建 Agent 连接
     auto conn = std::make_shared<AgentConnection>(clientFd, this);
     conn->initialize();
 
+    // 先注册到事件循环，再入 pendingConnections_ 映射。
+    // 这样 stop() 拿到 conn 时 conn 已经在事件循环里，close() 路径上的
+    // removeHandler(fd) 不会作用在未注册的 fd 上。
+    std::shared_ptr<IEventLoop> eventLoop;
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      pendingConnections_[clientFd] = conn;
+      eventLoop = eventLoop_;
     }
 
-    // 添加到事件循环（默认不监听 WRITE，按需动态开启）
-    if (eventLoop_) {
-      eventLoop_->addHandler(
+    if (eventLoop) {
+      eventLoop->addHandler(
           clientFd, EventType::READ | EventType::ERROR | EventType::HUP, conn);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      // stop() 可能在此期间已清空映射并标记停止；若已停止则把刚注册的
+      // 连接也清掉，保持一致性。
+      if (!running_) {
+        if (eventLoop) {
+          eventLoop->removeHandler(clientFd);
+        }
+        // conn 在此处出作用域后释放，触发 AgentConnection::close()
+        continue;
+      }
+      pendingConnections_[clientFd] = conn;
     }
 
     LOG_INFO("New agent connection accepted");
@@ -2017,7 +2134,9 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
           ServiceInfo svc;
           svc.name = parts[0];
           svc.type = parts[1];
-          svc.port = safeStringToInt(parts[2], 22);  // 默认 SSH 端口
+          const int parsedPort = safeStringToInt(parts[2], 22);
+          // 校验端口范围；非法值回退到默认 SSH 端口而非放行 0
+          svc.port = (parsedPort > 0 && parsedPort <= 65535) ? parsedPort : 22;
           if (parts.size() > 3) {
             svc.description = parts[3];
           }
@@ -2042,22 +2161,24 @@ bool ClusterManager::loadAgentTokens(const std::string& configPath) {
     loadedConfigs[currentConfig.agentId] = currentConfig;
   }
 
+  size_t totalConfigs = 0;
+  size_t totalSimple = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     agentConfigs_ = std::move(loadedConfigs);
     agentTokens_ = std::move(loadedTokens);
+    totalConfigs = agentConfigs_.size();
+    totalSimple = agentTokens_.size();
+    // 记录加载的预配置（在锁内读取，避免数据竞争）
+    for (const auto& pair : agentConfigs_) {
+      LOG_INFO("  - " + pair.first + " -> " + pair.second.ipAddress);
+    }
   }
 
-  size_t totalConfigs = agentConfigs_.size() + agentTokens_.size();
-  LOG_INFO("Loaded " + std::to_string(agentConfigs_.size()) +
-           " agent configs (with IP) and " +
-           std::to_string(agentTokens_.size()) +
-           " simple tokens, total: " + std::to_string(totalConfigs));
-
-  // 记录加载的预配置
-  for (const auto& pair : agentConfigs_) {
-    LOG_INFO("  - " + pair.first + " -> " + pair.second.ipAddress);
-  }
+  const size_t totalConfigsTotal = totalConfigs + totalSimple;
+  LOG_INFO("Loaded " + std::to_string(totalConfigs) +
+           " agent configs (with IP) and " + std::to_string(totalSimple) +
+           " simple tokens, total: " + std::to_string(totalConfigsTotal));
 
   return true;
 }
@@ -2196,6 +2317,9 @@ bool ClusterAgentClient::initialize(const std::string& serverAddr,
 
 bool ClusterAgentClient::registerToCluster(
     const std::vector<ServiceInfo>& services) {
+  // 串行化注册：agent_main.cpp 主线程的健康检查重连可能与 workerLoop
+  // 内部的重连并发执行，对 sockFd_/connected_ 产生数据竞争。
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   services_ = services;
 
   if (!connected_ && !connectToServer()) {
@@ -2235,10 +2359,11 @@ bool ClusterAgentClient::registerToCluster(
     registerReq["services"].push_back(std::move(item));
   }
 
+  std::string saltHex;
   std::string ivHex;
   std::string ciphertextHex;
   std::string tagHex;
-  if (!encryptWithTokenAesGcm(registerReq.dump(), authToken_, ivHex,
+  if (!encryptWithTokenAesGcm(registerReq.dump(), authToken_, saltHex, ivHex,
                               ciphertextHex, tagHex)) {
     LOG_ERROR("Failed to encrypt register payload");
     return false;
@@ -2247,6 +2372,7 @@ bool ClusterAgentClient::registerToCluster(
   json wireReq;
   wireReq["agentId"] = agentId_;
   wireReq["secure"] = {{"alg", "AES-256-GCM"},
+                       {"salt", saltHex},
                        {"iv", ivHex},
                        {"ciphertext", ciphertextHex},
                        {"tag", tagHex}};
@@ -2295,6 +2421,7 @@ void ClusterAgentClient::stop() {
 }
 
 bool ClusterAgentClient::sendHeartbeat() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (!connected_ || sockFd_ < 0) {
     return false;
   }
@@ -2308,6 +2435,7 @@ bool ClusterAgentClient::sendHeartbeat() {
 }
 
 bool ClusterAgentClient::unregister() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (!connected_) {
     return false;
   }
@@ -2360,8 +2488,19 @@ void ClusterAgentClient::workerLoop() {
     }
     const int waitMs = static_cast<int>(waitDuration.count());
 
+    // 在锁内快照 sockFd_；connected_ 为 true 时主线程不会重连，
+    // 因此 poll/receive 期间 sockFd_ 不会被并发关闭。
+    int pollFd = -1;
+    {
+      std::lock_guard<std::recursive_mutex> lock(mutex_);
+      if (!connected_ || sockFd_ < 0) {
+        continue;
+      }
+      pollFd = sockFd_;
+    }
+
     struct pollfd pfd;
-    pfd.fd = sockFd_;
+    pfd.fd = pollFd;
     pfd.events = POLLIN | POLLERR | POLLHUP;
     pfd.revents = 0;
 
@@ -2491,6 +2630,7 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
 }
 
 bool ClusterAgentClient::connectToServer() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   if (connected_ && sockFd_ >= 0) {
     return true;
   }
@@ -2514,11 +2654,13 @@ bool ClusterAgentClient::connectToServer() {
 }
 
 void ClusterAgentClient::disconnect() {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   closeSocket(sockFd_);
   connected_ = false;
 }
 
 bool ClusterAgentClient::sendMessage(const AgentMessage& msg) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
   auto data = msg.serialize();
 
   if (!sendAllWithTimeout(sockFd_, data.data(), data.size(), kSendTimeoutMs)) {

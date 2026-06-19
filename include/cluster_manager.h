@@ -242,13 +242,15 @@ public:
     bool validateAdminToken(const std::string& token) const;
 
     // 使用 admin token 解密安全管理请求
-    bool decryptAdminPayload(const std::string& ivHex,
+    bool decryptAdminPayload(const std::string& saltHex,
+                             const std::string& ivHex,
                              const std::string& ciphertextHex,
                              const std::string& tagHex,
                              std::string& plaintext) const;
 
     // 使用共享 token/节点 token 解密安全注册请求
     bool decryptAgentPayload(const std::string& agentIdHint,
+                             const std::string& saltHex,
                              const std::string& ivHex,
                              const std::string& ciphertextHex,
                              const std::string& tagHex,
@@ -361,12 +363,12 @@ private:
     // 运行标志
     std::atomic<bool> running_;
 
-    // NAT 回拨隧道参数
-    int reverseTunnelPortStart_;
-    int reverseTunnelPortEnd_;
-    int reverseTunnelRetries_;
-    int reverseTunnelAcceptTimeoutMs_;
-    std::atomic<int> reverseTunnelPortCursor_;
+  // NAT 回拨隧道参数
+  int reverseTunnelPortStart_;
+  int reverseTunnelPortEnd_;
+  int reverseTunnelRetries_;
+  int reverseTunnelAcceptTimeoutMs_;
+  std::atomic<unsigned> reverseTunnelPortCursor_;
 };
 
 // ============================================
@@ -459,9 +461,11 @@ private:
     
     // 工作线程
     std::thread workerThread_;
-    
-    // 互斥锁
-    mutable std::mutex mutex_;
+
+    // 互斥锁（递归：registerToCluster 会调用 connectToServer/sendMessage
+    // 等同样需要持锁的辅助方法）。保护连接状态/sockFd_ 等共享字段，
+    // 防止主线程重连与 workerLoop 重连并发竞争。
+    mutable std::recursive_mutex mutex_;
 };
 
 } // namespace sshjump

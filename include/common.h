@@ -115,13 +115,18 @@ inline std::string sanitizeLogMessage(const std::string& msg) {
     std::string result;
     result.reserve(msg.size());
     for (char c : msg) {
-        // 过滤控制字符，但保留换行和制表符
-        if (c == '\n' || c == '\t' || (c >= 32 && c < 127)) {
-            result += c;
+        // 过滤控制字符；换行/回车/制表符也替换为字面转义，避免攻击者
+        // 在日志中注入伪造的换行 + 时间戳行，干扰审计。
+        if (c == '\n') {
+            result += "\\n";
         } else if (c == '\r') {
-            // 忽略回车
+            result += "\\r";
+        } else if (c == '\t') {
+            result += "\\t";
+        } else if (c >= 32 && c < 127) {
+            result += c;
         } else {
-            // 其他控制字符替换为 ?
+            // 其他控制字符/非可打印字符替换为 ?
             result += '?';
         }
     }
@@ -142,7 +147,11 @@ inline void log(LogLevel level, const std::string& msg) {
     localtime_r(&time, &tm_result);  // 线程安全的 localtime
     std::strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", &tm_result);
 
-    std::cout << "[" << timeStr << "][" << levelStr[static_cast<int>(level)] << "] " << safeMsg << std::endl;
+    // 用全局 mutex 串行化 std::cout 写入，避免多线程日志字符级交错。
+    static std::mutex g_logMutex;
+    std::lock_guard<std::mutex> lock(g_logMutex);
+    std::cout << "[" << timeStr << "][" << levelStr[static_cast<int>(level)]
+              << "] " << safeMsg << std::endl;
 }
 
 #define LOG_DEBUG(msg) log(LogLevel::DEBUG, msg)
@@ -273,6 +282,13 @@ public:
     
     // 调整写入位置
     void advanceWritePos(size_t len) {
+        // 边界检查：writePos_ 不能越过 data_.size()，否则 writableData()
+        // 会返回越界指针。
+        if (writePos_ + len > data_.size()) {
+            // 上界限制，避免越界；调用方应通过 ensureWritableBytes 预留空间。
+            writePos_ = data_.size();
+            return;
+        }
         writePos_ += len;
     }
     
@@ -309,6 +325,8 @@ protected:
 };
 
 // 工具函数：生成唯一ID
+// 注意：基于时钟 + 线程 ID + 计数器，非密码学唯一/不可猜。
+// 仅用于 sessionId / requestId 等非敏感场景，不可作为 token 或密钥。
 inline std::string generateUUID() {
     static std::atomic<uint64_t> counter{0};
     auto now = std::chrono::high_resolution_clock::now().time_since_epoch().count();
@@ -365,13 +383,16 @@ bool timingSafeEqual(const std::string& a, const std::string& b);
 std::string bytesToHex(const uint8_t* data, size_t len);
 bool hexToBytes(const std::string& hex, std::vector<uint8_t>& out);
 
-// 使用 token 派生密钥进行 AES-256-GCM 加解密
+// 使用 token 派生密钥进行 AES-256-GCM 加解密。
+// salt 为 per-message 随机盐，与密文一起传输；密钥派生使用 PBKDF2-HMAC-SHA256。
 bool encryptWithTokenAesGcm(const std::string& plaintext,
                             const std::string& token,
+                            std::string& saltHex,
                             std::string& ivHex,
                             std::string& ciphertextHex,
                             std::string& tagHex);
-bool decryptWithTokenAesGcm(const std::string& ivHex,
+bool decryptWithTokenAesGcm(const std::string& saltHex,
+                            const std::string& ivHex,
                             const std::string& ciphertextHex,
                             const std::string& tagHex,
                             const std::string& token,

@@ -7,10 +7,31 @@
 
 #include <sys/stat.h>
 
+#include <cctype>
 #include <cerrno>
 #include <iomanip>
 
 namespace sshjump {
+
+namespace {
+
+// 把 username / assetId 这类会进入文件路径的字段做白名单过滤，
+// 阻止通过用户名或 agentId 构造 ../ 进行路径穿越。
+std::string sanitizePathComponent(const std::string& value) {
+  std::string out;
+  out.reserve(value.size());
+  for (char ch : value) {
+    if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' ||
+        ch == '_') {
+      out.push_back(ch);
+    } else {
+      out.push_back('_');
+    }
+  }
+  return out.empty() ? "anonymous" : out;
+}
+
+}  // namespace
 
 SessionRecorder::SessionRecorder() : recording_(false), recordedSize_(0) {}
 
@@ -26,8 +47,8 @@ bool SessionRecorder::startRecording(const std::string& sessionPath,
     return false;
   }
 
-  username_ = username;
-  assetId_ = assetId;
+  username_ = sanitizePathComponent(username);
+  assetId_ = sanitizePathComponent(assetId);
   hostname_ = hostname;
   sessionId_ = generateUUID();
   startTime_ = std::chrono::steady_clock::now();
@@ -47,7 +68,7 @@ bool SessionRecorder::startRecording(const std::string& sessionPath,
   }
   chmod(dirPath.c_str(), 0700);
 
-  // 创建用户子目录
+  // 创建用户子目录（username_ 已经过滤，安全）
   std::string userDir = dirPath + username_;
   if (mkdir(userDir.c_str(), 0700) != 0 && errno != EEXIST) {
     LOG_ERROR("Failed to create user directory: " + userDir + " - " +
@@ -56,7 +77,7 @@ bool SessionRecorder::startRecording(const std::string& sessionPath,
   }
   chmod(userDir.c_str(), 0700);
 
-  // 生成录制文件名: {timestamp}_{assetId}.rec
+  // 生成录制文件名: {timestamp}_{assetId}.rec  (assetId_ 已经过滤，安全)
   auto time = std::chrono::system_clock::to_time_t(startWallTime_);
   struct tm tm_result;
   localtime_r(&time, &tm_result);
