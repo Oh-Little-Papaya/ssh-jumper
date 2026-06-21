@@ -39,14 +39,14 @@ require_secret() {
     fi
 }
 
-require_secret JUMP_PASS
-require_secret DEVELOPER_PASS
-require_secret OPS_PASS
-
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_pass() { echo -e "${GREEN}[PASS]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_fail() { echo -e "${RED}[FAIL]${NC} $1"; FAILED=1; }
+
+require_secret JUMP_PASS
+require_secret DEVELOPER_PASS
+require_secret OPS_PASS
 
 run_client() {
     $COMPOSE exec -T jump-client bash -lc "$1"
@@ -221,7 +221,7 @@ test_authentication() {
 }
 
 test_user_asset_visibility() {
-    log_info "测试用户资产可见性（默认全资产）..."
+    log_info "测试用户资产可见性（按示例权限文件）..."
 
     local dev_out=""
     for _ in 1 2 3; do
@@ -232,7 +232,7 @@ test_user_asset_visibility() {
         sleep 2
     done
     if echo "$dev_out" | grep -q "web-server-01" && echo "$dev_out" | grep -q "api-server-01" &&
-       echo "$dev_out" | grep -q "db-server-01" && echo "$dev_out" | grep -q "cache-server-01"; then
+       ! echo "$dev_out" | grep -q "db-server-01" && ! echo "$dev_out" | grep -q "cache-server-01"; then
         log_pass "developer 资产可见性正确"
     else
         log_fail "developer 资产可见性不符合预期"
@@ -247,7 +247,7 @@ test_user_asset_visibility() {
         sleep 2
     done
     if echo "$ops_out" | grep -q "web-server-01" && echo "$ops_out" | grep -q "api-server-01" &&
-       echo "$ops_out" | grep -q "cache-server-01" && echo "$ops_out" | grep -q "db-server-01"; then
+       echo "$ops_out" | grep -q "cache-server-01" && ! echo "$ops_out" | grep -q "db-server-01"; then
         log_pass "ops 资产可见性正确"
     else
         log_fail "ops 资产可见性不符合预期"

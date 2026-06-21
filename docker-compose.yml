@@ -15,8 +15,8 @@ services:
     networks:
       - jump-network
     ports:
-      - "2222:2222"  # SSH 用户连接端口
-      - "8888:8888"  # Agent 注册端口
+      - "${DOCKER_JUMP_SSH_BIND:-2222}:2222"  # SSH 用户连接端口
+      - "${DOCKER_JUMP_CLUSTER_BIND:-8888}:8888"  # Agent 注册端口
     volumes:
       - ./docker/server-config:/etc/ssh_jump
       - server-logs:/var/log/ssh_jump
@@ -26,8 +26,10 @@ services:
       - CLUSTER_SHARED_TOKEN=${CLUSTER_SHARED_TOKEN:?Set CLUSTER_SHARED_TOKEN}
       - ADMIN_TOKEN=${ADMIN_TOKEN:?Set ADMIN_TOKEN}
       - DEFAULT_TARGET_PASSWORD=${AGENT_ROOT_PASSWORD:?Set AGENT_ROOT_PASSWORD}
+      - TARGET_KNOWN_HOSTS_FILE=${TARGET_KNOWN_HOSTS_FILE:-/var/lib/ssh_jump/target_known_hosts}
+      - TARGET_HOST_KEY_TRUST_ON_FIRST_USE=${TARGET_HOST_KEY_TRUST_ON_FIRST_USE:-true}
     healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "2222"]
+      test: ["CMD-SHELL", "ss -H -ltn | awk '$4 ~ /:2222$/ || $4 ~ /:8888$/ {count++} END {exit !(count >= 2)}'"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -171,7 +173,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.20.0.0/24
+        - subnet: ${DOCKER_JUMP_SUBNET:-172.31.240.0/24}
 
 volumes:
   server-logs:

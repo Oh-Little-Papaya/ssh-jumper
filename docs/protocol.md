@@ -135,7 +135,7 @@ User -> Jump Server -> Agent(control)
 User <- Jump Server <- Reverse Tunnel <- Agent <- Target Service
 ```
 
-**FORWARD_REQUEST Payload（服务端 -> Agent）：**
+`FORWARD_REQUEST` 现在要求使用与 Agent 注册相同 token 的 `AES-256-GCM` 安全封装；解密后的明文如下：
 
 ```json
 {
@@ -143,14 +143,19 @@ User <- Jump Server <- Reverse Tunnel <- Agent <- Target Service
   "targetHost": "127.0.0.1",
   "targetPort": 22,
   "connectBackPort": 38001,
-  "connectBackHost": "198.51.100.10"
+  "connectBackHost": "198.51.100.10",
+  "callbackToken": "one-time-random-token",
+  "ts": 1710000000,
+  "nonce": "random-nonce"
 }
 ```
 
 说明：
-- `targetHost/targetPort`：Agent 本地要连接的目标服务
+- `targetHost/targetPort`：Agent 本地要连接的目标服务；当前仅允许回环地址（`127.0.0.1` / `::1` / `localhost`）
 - `connectBackPort`：服务端在配置端口池内选择的回拨监听端口
 - `connectBackHost`：可选，服务端回拨地址（支持 IPv4/IPv6）；缺省时 Agent 使用控制连接的服务端地址
+- `callbackToken`：一次性回拨认证令牌。Agent 回拨后会先发送 `requestId + callbackToken` 认证帧，再开始转发字节流
+- `ts/nonce`：用于 Agent 侧的时效与重放保护
 - 服务端会按 `reverse_tunnel_retries` 次数重试不同端口，超时后回退直连模式
 
 ## 服务器与 Agent 通信示例

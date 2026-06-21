@@ -128,6 +128,19 @@ TEST(user_permission_denied_assets, "资产管理") {
     return true;
 }
 
+TEST(user_permission_denied_by_hostname, "资产管理") {
+    UserPermission perm;
+    perm.username = "ops";
+    perm.allowAll = false;
+    perm.allowedPatterns = {"db-*"};
+    perm.deniedAssets = {"db-server-01"};
+
+    ASSERT_FALSE(perm.canAccess("agent-123", "db-server-01"));
+    ASSERT_TRUE(perm.canAccess("agent-456", "db-server-02"));
+
+    return true;
+}
+
 TEST(user_permission_empty, "资产管理") {
     UserPermission perm;
     perm.username = "nobody";

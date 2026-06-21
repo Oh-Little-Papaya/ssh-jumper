@@ -39,6 +39,16 @@ heartbeat_interval = 30
 # 心跳超时时间 (秒)
 heartbeat_timeout = 90
 
+# NAT 回拨端口池与重试参数
+reverse_tunnel_port_start = 38000
+reverse_tunnel_port_end = 38199
+reverse_tunnel_retries = 3
+reverse_tunnel_accept_timeout_ms = 7000
+
+# 转发工作线程数与桥接空闲超时（秒）
+forward_task_threads = 4
+bridge_idle_timeout_seconds = 300
+
 [assets]
 # 资产刷新间隔 (秒)
 refresh_interval = 30
@@ -87,6 +97,14 @@ allow_sftp = false
 
 # 每个来源 IP 每分钟允许的新连接数（防暴力探测/连接洪泛）
 max_connections_per_minute = 10
+
+# 目标资产主机密钥校验策略
+target_known_hosts_file = /var/lib/ssh_jump/target_known_hosts
+target_host_key_trust_on_first_use = true
+
+# 跳板机连接目标资产时使用的默认凭据
+default_target_user = root
+default_target_password =
 
 [management]
 # 子节点配置文件（公网管理节点的下级节点清单）

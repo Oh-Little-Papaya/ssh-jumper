@@ -94,13 +94,27 @@ if(ENABLE_FOLLY)
     endif()
 endif()
 
-# 下载 nlohmann/json 库
-include(FetchContent)
-FetchContent_Declare(
-    json
-    URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
-)
-FetchContent_MakeAvailable(json)
+# 查找 nlohmann/json，优先使用系统包，缺失时再回退到 FetchContent。
+find_package(nlohmann_json CONFIG QUIET)
+if(nlohmann_json_FOUND)
+    message(STATUS "Using system nlohmann_json package")
+else()
+    find_path(NLOHMANN_JSON_INCLUDE_DIR nlohmann/json.hpp)
+    if(NLOHMANN_JSON_INCLUDE_DIR)
+        add_library(nlohmann_json INTERFACE)
+        add_library(nlohmann_json::nlohmann_json ALIAS nlohmann_json)
+        target_include_directories(nlohmann_json INTERFACE ${NLOHMANN_JSON_INCLUDE_DIR})
+        message(STATUS "Using system nlohmann/json headers from: ${NLOHMANN_JSON_INCLUDE_DIR}")
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            json
+            URL https://github.com/nlohmann/json/releases/download/v3.11.2/json.tar.xz
+        )
+        FetchContent_MakeAvailable(json)
+        message(STATUS "nlohmann_json will be fetched via FetchContent")
+    endif()
+endif()
 
 # 头文件目录
 include_directories(

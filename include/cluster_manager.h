@@ -161,6 +161,8 @@ private:
     
     // 发送响应
     void sendResponse(bool success, const std::string& message);
+    void sendSecureResponse(bool success, const std::string& message,
+                            const std::string& token);
     
     // socket fd
     int fd_;
@@ -300,7 +302,19 @@ public:
     bool validateAndRememberAdminNonce(const std::string& nonce,
                                        int ttlSeconds = 600);
 
+    // 校验并登记 Agent 注册 nonce（防重放）
+    bool validateAndRememberRegisterNonce(const std::string& agentId,
+                                          const std::string& nonce,
+                                          int ttlSeconds = 600);
+
     void setAgentTokenFilePath(const std::string& path);
+
+    // 设置转发执行参数（线程数、桥接空闲超时）
+    void setForwardRuntimeOptions(int forwardTaskThreads,
+                                  int bridgeIdleTimeoutSeconds);
+
+    // 获取转发执行参数
+    std::tuple<int, int> getForwardRuntimeOptions() const;
     
 private:
     bool persistAgentTokensLocked();
@@ -353,6 +367,9 @@ private:
 
     // 管理请求 nonce 去重（nonce -> 首次出现时间）
     std::unordered_map<std::string, std::chrono::steady_clock::time_point> adminNonces_;
+
+    // Agent 注册 nonce 去重（agentId:nonce -> 首次出现时间）
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> registerNonces_;
     
     // 主机名到Agent ID映射
     std::unordered_map<std::string, std::string> hostnameToAgentId_;
@@ -369,6 +386,8 @@ private:
   int reverseTunnelRetries_;
   int reverseTunnelAcceptTimeoutMs_;
   std::atomic<unsigned> reverseTunnelPortCursor_;
+  int forwardTaskThreads_;
+  int bridgeIdleTimeoutSeconds_;
 };
 
 // ============================================
@@ -466,6 +485,12 @@ private:
     // 等同样需要持锁的辅助方法）。保护连接状态/sockFd_ 等共享字段，
     // 防止主线程重连与 workerLoop 重连并发竞争。
     mutable std::recursive_mutex mutex_;
+
+    // 服务端下发消息 nonce 去重（nonce -> 首次出现时间）
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point> serverNonces_;
+
+    bool validateAndRememberServerNonce(const std::string& nonce,
+                                        int ttlSeconds = 600);
 };
 
 } // namespace sshjump

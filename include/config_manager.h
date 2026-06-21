@@ -36,6 +36,8 @@ struct ClusterConfig {
     int reverseTunnelPortEnd = 38199;
     int reverseTunnelRetries = 3;
     int reverseTunnelAcceptTimeoutMs = 7000;
+    int forwardTaskThreads = 4;
+    int bridgeIdleTimeoutSeconds = 300;
 };
 
 // ============================================
@@ -76,6 +78,8 @@ struct SecurityConfig {
     bool allowSftp = false;
     int maxConnectionsPerMinute = 0;  // 0 表示不限流
     std::string usersFile = "/etc/ssh_jump/users.conf";  // 用户认证文件路径
+    std::string targetKnownHostsFile = "/var/lib/ssh_jump/target_known_hosts";
+    bool targetHostKeyTrustOnFirstUse = true;
 
     // 目标连接凭据配置（用于连接到 Agent）
     std::string defaultTargetUser = "root";           // 默认目标用户

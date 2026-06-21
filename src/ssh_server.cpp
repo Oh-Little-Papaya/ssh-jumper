@@ -23,6 +23,8 @@ namespace sshjump {
 
 namespace {
 
+constexpr long kServerHandshakeTimeoutSeconds = 5;
+
 int resolveAuthMethodsMask(const std::string& rawMethods) {
   int mask = 0;
   for (const auto& tokenRaw : splitString(rawMethods, ',')) {
@@ -385,6 +387,8 @@ void SSHConnection::start() {
 
   const auto config = ConfigManager::getInstance().getServerConfig();
   const int authMethodsMask = resolveAuthMethodsMask(config.ssh.authMethods);
+  const long handshakeTimeoutSeconds = kServerHandshakeTimeoutSeconds;
+  ssh_options_set(session, SSH_OPTIONS_TIMEOUT, &handshakeTimeoutSeconds);
 
   // 注册服务端认证回调，避免使用已弃用的 ssh_message_auth_* 接口。
   memset(&serverCallbacks_, 0, sizeof(serverCallbacks_));
@@ -486,6 +490,11 @@ void SSHConnection::handleSession() {
                   std::string(ssh_get_error(session)));
       }
       break;
+    }
+
+    if (interactiveSessionRequested_.exchange(false)) {
+      startInteractiveSession();
+      return;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -674,8 +683,7 @@ void SSHConnection::handleChannelRequest(ssh_message message) {
     case SSH_CHANNEL_REQUEST_SHELL: {
       // Shell 请求
       ssh_message_channel_request_reply_success(message);
-      // 启动交互式会话
-      startInteractiveSession();
+      interactiveSessionRequested_ = true;
       break;
     }
 
@@ -685,8 +693,7 @@ void SSHConnection::handleChannelRequest(ssh_message message) {
       if (cmd) {
         rawCommand_ = cmd;
         ssh_message_channel_request_reply_success(message);
-        // 启动交互式会话，传入命令
-        startInteractiveSession();
+        interactiveSessionRequested_ = true;
       } else {
         ssh_message_reply_default(message);
       }
@@ -700,6 +707,7 @@ void SSHConnection::handleChannelRequest(ssh_message message) {
 }
 
 void SSHConnection::startInteractiveSession() {
+  LOG_INFO("Starting interactive session, id=" + connId_);
   interactiveSession_ =
       std::make_shared<InteractiveSession>(shared_from_this(), server_);
 

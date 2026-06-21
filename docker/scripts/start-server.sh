@@ -10,6 +10,8 @@ DEFAULT_TARGET_USER="${DEFAULT_TARGET_USER:-root}"
 DEFAULT_TARGET_PASSWORD="${DEFAULT_TARGET_PASSWORD:-}"
 DEFAULT_TARGET_PRIVATE_KEY="${DEFAULT_TARGET_PRIVATE_KEY:-}"
 DEFAULT_TARGET_KEY_PASSWORD="${DEFAULT_TARGET_KEY_PASSWORD:-}"
+TARGET_KNOWN_HOSTS_FILE="${TARGET_KNOWN_HOSTS_FILE:-/var/lib/ssh_jump/target_known_hosts}"
+TARGET_HOST_KEY_TRUST_ON_FIRST_USE="${TARGET_HOST_KEY_TRUST_ON_FIRST_USE:-true}"
 MAX_CONNECTIONS_PER_MINUTE="${MAX_CONNECTIONS_PER_MINUTE:-120}"
 
 SERVER_USERS="${SERVER_USERS:-}"
@@ -51,6 +53,8 @@ echo "[INFO] 共享 Token: 已从 CLUSTER_SHARED_TOKEN 加载"
 echo "[INFO] 管理 Token: 已从 ADMIN_TOKEN 加载"
 echo "[INFO] 权限策略: 所有用户默认可访问全部资产"
 echo "[INFO] 子节点参数: $SERVER_CHILD_NODES"
+echo "[INFO] 目标 known_hosts: $TARGET_KNOWN_HOSTS_FILE"
+echo "[INFO] 目标主机密钥 TOFU: $TARGET_HOST_KEY_TRUST_ON_FIRST_USE"
 echo ""
 
 # 启动服务器
@@ -63,6 +67,8 @@ SERVER_CMD=(
     --listen-address "$SSH_LISTEN_ADDRESS"
     --cluster-listen-address "$CLUSTER_LISTEN_ADDRESS"
     --default-target-user "$DEFAULT_TARGET_USER"
+    --target-known-hosts-file "$TARGET_KNOWN_HOSTS_FILE"
+    --target-host-key-trust-on-first-use "$TARGET_HOST_KEY_TRUST_ON_FIRST_USE"
     --max-connections-per-minute "$MAX_CONNECTIONS_PER_MINUTE"
     -v
 )

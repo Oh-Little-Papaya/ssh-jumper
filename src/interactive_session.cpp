@@ -73,6 +73,88 @@ std::string getServerKeyFingerprintHex(ssh_session session) {
     return fingerprint;
 }
 
+bool ensureKnownHostsParentDir(const std::string& knownHostsPath) {
+    if (knownHostsPath.empty()) {
+        return false;
+    }
+
+    std::error_code ec;
+    const fs::path filePath(knownHostsPath);
+    const fs::path parent = filePath.parent_path();
+    if (parent.empty()) {
+        return true;
+    }
+
+    fs::create_directories(parent, ec);
+    if (ec) {
+        LOG_ERROR("Failed to create known_hosts directory: " + parent.string() +
+                  ", err=" + ec.message());
+        return false;
+    }
+    return true;
+}
+
+bool verifyOrTrustTargetHostKey(ssh_session session,
+                                const std::string& host,
+                                int port) {
+    if (!session) {
+        return false;
+    }
+
+    const auto securityConfig = ConfigManager::getInstance().getServerConfig().security;
+    const int knownHostState = ssh_session_is_known_server(session);
+    if (knownHostState == SSH_KNOWN_HOSTS_OK) {
+        return true;
+    }
+
+    const std::string fingerprint = getServerKeyFingerprintHex(session);
+    if ((knownHostState == SSH_KNOWN_HOSTS_UNKNOWN ||
+         knownHostState == SSH_KNOWN_HOSTS_NOT_FOUND) &&
+        securityConfig.targetHostKeyTrustOnFirstUse) {
+        if (!ensureKnownHostsParentDir(securityConfig.targetKnownHostsFile)) {
+            return false;
+        }
+
+        if (ssh_session_update_known_hosts(session) == SSH_OK) {
+            chmod(securityConfig.targetKnownHostsFile.c_str(), 0600);
+            LOG_INFO("Accepted target host key via TOFU for " + host + ":" +
+                     std::to_string(port) +
+                     (fingerprint.empty() ? std::string()
+                                          : ", sha256_hex=" + fingerprint));
+            return true;
+        }
+
+        LOG_ERROR("Failed to persist target host key for " + host + ":" +
+                  std::to_string(port) + ": " + ssh_get_error(session));
+        return false;
+    }
+
+    std::string reason;
+    switch (knownHostState) {
+        case SSH_KNOWN_HOSTS_CHANGED:
+            reason = "host key changed";
+            break;
+        case SSH_KNOWN_HOSTS_OTHER:
+            reason = "host key type mismatch";
+            break;
+        case SSH_KNOWN_HOSTS_NOT_FOUND:
+            reason = "known_hosts file not found";
+            break;
+        case SSH_KNOWN_HOSTS_UNKNOWN:
+            reason = "host key unknown";
+            break;
+        case SSH_KNOWN_HOSTS_ERROR:
+        default:
+            reason = "known_hosts verification error";
+            break;
+    }
+    LOG_ERROR("Host key verification failed for " + host + ":" +
+              std::to_string(port) + " (" + reason + ")" +
+              (fingerprint.empty() ? std::string()
+                                   : ", sha256_hex=" + fingerprint));
+    return false;
+}
+
 std::string sanitizeTmuxComponent(const std::string& value) {
     std::string sanitized;
     sanitized.reserve(value.size());
@@ -179,6 +261,12 @@ bool SSHClient::connectWithSocket(int connectedSockFd,
     ssh_options_set(session_, SSH_OPTIONS_HOST, host.c_str());
     ssh_options_set(session_, SSH_OPTIONS_USER, username.c_str());
     ssh_options_set(session_, SSH_OPTIONS_PORT, &port);
+    const auto securityConfig = ConfigManager::getInstance().getServerConfig().security;
+    if (!securityConfig.targetKnownHostsFile.empty()) {
+        ensureKnownHostsParentDir(securityConfig.targetKnownHostsFile);
+        ssh_options_set(session_, SSH_OPTIONS_KNOWNHOSTS,
+                        securityConfig.targetKnownHostsFile.c_str());
+    }
     
     // 设置 socket
     ssh_options_set(session_, SSH_OPTIONS_FD, &sockFd_);
@@ -191,33 +279,7 @@ bool SSHClient::connectWithSocket(int connectedSockFd,
         return false;
     }
 
-    // 严格校验目标主机密钥，防止 MITM。
-    const int knownHostState = ssh_session_is_known_server(session_);
-    if (knownHostState != SSH_KNOWN_HOSTS_OK) {
-        const std::string fingerprint = getServerKeyFingerprintHex(session_);
-        std::string reason;
-        switch (knownHostState) {
-            case SSH_KNOWN_HOSTS_CHANGED:
-                reason = "host key changed";
-                break;
-            case SSH_KNOWN_HOSTS_OTHER:
-                reason = "host key type mismatch";
-                break;
-            case SSH_KNOWN_HOSTS_NOT_FOUND:
-                reason = "known_hosts file not found";
-                break;
-            case SSH_KNOWN_HOSTS_UNKNOWN:
-                reason = "host key unknown";
-                break;
-            case SSH_KNOWN_HOSTS_ERROR:
-            default:
-                reason = "known_hosts verification error";
-                break;
-        }
-        LOG_ERROR("Host key verification failed for " + host + ":" +
-                  std::to_string(port) + " (" + reason + ")" +
-                  (fingerprint.empty() ? std::string()
-                                       : ", sha256_hex=" + fingerprint));
+    if (!verifyOrTrustTargetHostKey(session_, host, port)) {
         disconnect();
         return false;
     }

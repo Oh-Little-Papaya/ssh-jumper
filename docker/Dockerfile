@@ -66,6 +66,7 @@ ARG PROJECT_ENABLE_FOLLY=ON
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssh-dev \
+    nlohmann-json3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制源代码
@@ -97,6 +98,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    iproute2 \
     libboost-all-dev \
     libdouble-conversion3 \
     libevent-2.1-7 \
@@ -132,7 +134,7 @@ FROM runtime-base AS server
 # 创建运行用户和目录
 RUN groupadd -r sshjump && \
     useradd -r -g sshjump -s /bin/false sshjump && \
-    mkdir -p /etc/ssh_jump /var/log/ssh_jump /opt/ssh_jump
+    mkdir -p /etc/ssh_jump /var/log/ssh_jump /opt/ssh_jump /var/lib/ssh_jump
 
 # 复制二进制文件
 COPY --from=builder /build/build/ssh_jump_server /opt/ssh_jump/

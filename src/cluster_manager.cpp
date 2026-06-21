@@ -40,10 +40,36 @@ constexpr int kDefaultTunnelAcceptTimeoutMs = 7000;
 constexpr int kDefaultReverseTunnelPortStart = 38000;
 constexpr int kDefaultReverseTunnelPortEnd = 38199;
 constexpr int kDefaultReverseTunnelRetries = 3;
+constexpr int kDefaultForwardTaskThreads = 4;
+constexpr int kDefaultBridgeIdleTimeoutSeconds = 300;
 constexpr int kSendTimeoutMs = 5000;
+constexpr int kSecureMessageClockSkewSeconds = 300;
+constexpr int kSecureNonceTtlSeconds = 600;
+constexpr int kCallbackAuthTimeoutMs = 3000;
+constexpr int kBridgePollIntervalMs = 1000;
 constexpr uint32_t kMaxAgentMessageSize = 10 * 1024 * 1024;
+constexpr uint32_t kMaxCallbackAuthFrameSize = 4096;
+std::atomic<int> gForwardTaskThreads{kDefaultForwardTaskThreads};
+std::atomic<int> gBridgeIdleTimeoutSeconds{kDefaultBridgeIdleTimeoutSeconds};
+
 bool isWildcardAddress(const std::string& address) {
   return address.empty() || address == "0.0.0.0" || address == "::";
+}
+
+bool isLoopbackTargetHost(const std::string& host) {
+  return host == "127.0.0.1" || host == "::1" || host == "localhost";
+}
+
+std::string generateRandomHexToken(size_t numBytes) {
+  if (numBytes == 0) {
+    return "";
+  }
+
+  std::vector<uint8_t> bytes(numBytes, 0);
+  if (RAND_bytes(bytes.data(), static_cast<int>(bytes.size())) != 1) {
+    return "";
+  }
+  return bytesToHex(bytes.data(), bytes.size());
 }
 
 std::string sockaddrToIp(const struct sockaddr* addr) {
@@ -229,6 +255,188 @@ bool sendAllWithTimeout(int fd, const uint8_t* data, size_t len,
   return true;
 }
 
+bool readExactWithTimeout(int fd, void* buffer, size_t len, int timeoutMs) {
+  if (fd < 0 || !buffer) {
+    return false;
+  }
+
+  auto* out = reinterpret_cast<uint8_t*>(buffer);
+  size_t totalRead = 0;
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+
+  while (totalRead < len) {
+    const ssize_t n = recv(fd, out + totalRead, len - totalRead, 0);
+    if (n > 0) {
+      totalRead += static_cast<size_t>(n);
+      continue;
+    }
+
+    if (n == 0) {
+      return false;
+    }
+
+    if (errno == EINTR) {
+      continue;
+    }
+
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return false;
+      }
+      const int waitMs = static_cast<int>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now)
+              .count());
+      struct pollfd pfd{fd, POLLIN, 0};
+      if (poll(&pfd, 1, waitMs) <= 0) {
+        return false;
+      }
+      continue;
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
+bool buildSecurePayload(const std::string& plaintext, const std::string& token,
+                        std::string& payload) {
+  payload.clear();
+
+  std::string saltHex;
+  std::string ivHex;
+  std::string ciphertextHex;
+  std::string tagHex;
+  if (!encryptWithTokenAesGcm(plaintext, token, saltHex, ivHex, ciphertextHex,
+                              tagHex)) {
+    return false;
+  }
+
+  nlohmann::json wire;
+  wire["secure"] = {{"alg", "AES-256-GCM"},
+                    {"salt", saltHex},
+                    {"iv", ivHex},
+                    {"ciphertext", ciphertextHex},
+                    {"tag", tagHex}};
+  payload = wire.dump();
+  return true;
+}
+
+bool decryptSecurePayload(const std::string& payload, const std::string& token,
+                          std::string& plaintext) {
+  plaintext.clear();
+
+  nlohmann::json wire;
+  try {
+    wire = nlohmann::json::parse(payload);
+  } catch (const std::exception&) {
+    return false;
+  }
+
+  if (!wire.is_object() || !wire.contains("secure") ||
+      !wire["secure"].is_object()) {
+    return false;
+  }
+
+  const auto& secure = wire["secure"];
+  return decryptWithTokenAesGcm(trimString(secure.value("salt", "")),
+                                trimString(secure.value("iv", "")),
+                                trimString(secure.value("ciphertext", "")),
+                                trimString(secure.value("tag", "")), token,
+                                plaintext);
+}
+
+bool validateTimestampWindow(int64_t timestampSeconds) {
+  if (timestampSeconds <= 0) {
+    return false;
+  }
+
+  const auto now = std::chrono::system_clock::now();
+  const int64_t nowSeconds =
+      std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
+          .count();
+  return timestampSeconds >= (nowSeconds - kSecureMessageClockSkewSeconds) &&
+         timestampSeconds <= (nowSeconds + kSecureMessageClockSkewSeconds);
+}
+
+bool validateAndRememberNonce(
+    std::unordered_map<std::string, std::chrono::steady_clock::time_point>&
+        nonceCache,
+    const std::string& cacheKey, int ttlSeconds) {
+  const std::string trimmedKey = trimString(cacheKey);
+  if (trimmedKey.empty()) {
+    return false;
+  }
+
+  const int effectiveTtl = std::max(60, ttlSeconds);
+  const auto now = std::chrono::steady_clock::now();
+  const auto expireBefore = now - std::chrono::seconds(effectiveTtl);
+
+  for (auto it = nonceCache.begin(); it != nonceCache.end();) {
+    if (it->second < expireBefore) {
+      it = nonceCache.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  if (nonceCache.find(trimmedKey) != nonceCache.end()) {
+    return false;
+  }
+
+  nonceCache[trimmedKey] = now;
+  return true;
+}
+
+bool sendFramedJson(int fd, const nlohmann::json& frame, int timeoutMs) {
+  if (fd < 0 || !frame.is_object()) {
+    return false;
+  }
+
+  const std::string payload = frame.dump();
+  if (payload.empty() || payload.size() > kMaxCallbackAuthFrameSize) {
+    return false;
+  }
+
+  const uint32_t len = htonl(static_cast<uint32_t>(payload.size()));
+  if (!sendAllWithTimeout(fd, reinterpret_cast<const uint8_t*>(&len),
+                          sizeof(len), timeoutMs)) {
+    return false;
+  }
+  return sendAllWithTimeout(
+      fd, reinterpret_cast<const uint8_t*>(payload.data()), payload.size(),
+      timeoutMs);
+}
+
+bool receiveFramedJson(int fd, int timeoutMs, nlohmann::json& frame) {
+  frame = nlohmann::json();
+
+  uint32_t rawLen = 0;
+  if (!readExactWithTimeout(fd, &rawLen, sizeof(rawLen), timeoutMs)) {
+    return false;
+  }
+
+  const uint32_t payloadLen = ntohl(rawLen);
+  if (payloadLen == 0 || payloadLen > kMaxCallbackAuthFrameSize) {
+    return false;
+  }
+
+  std::string payload(payloadLen, '\0');
+  if (!readExactWithTimeout(fd, payload.data(), payload.size(), timeoutMs)) {
+    return false;
+  }
+
+  try {
+    frame = nlohmann::json::parse(payload);
+  } catch (const std::exception&) {
+    return false;
+  }
+
+  return frame.is_object();
+}
+
 int connectTcpWithTimeout(const std::string& host, int port, int timeoutMs) {
   if (host.empty() || port <= 0 || port > 65535) {
     return -1;
@@ -308,10 +516,9 @@ void bridgeSocketPair(int leftFd, int rightFd) {
   setNonBlocking(rightFd);
 
   char buffer[DEFAULT_BUFFER_SIZE];
-  // 允许累计 5 分钟（5 轮 × 60s poll 超时）无数据流动的空闲；
-  // 超过则关闭，避免长期占用 fd。
-  constexpr int kMaxIdleRounds = 5;
-  int idleRounds = 0;
+  const auto idleTimeout =
+      std::chrono::seconds(std::max(1, gBridgeIdleTimeoutSeconds.load()));
+  auto lastDataAt = std::chrono::steady_clock::now();
 
   while (true) {
     struct pollfd pfds[2];
@@ -322,7 +529,7 @@ void bridgeSocketPair(int leftFd, int rightFd) {
     pfds[1].events = POLLIN;
     pfds[1].revents = 0;
 
-    const int ret = poll(pfds, 2, 60 * 1000);
+    const int ret = poll(pfds, 2, kBridgePollIntervalMs);
     if (ret < 0) {
       if (errno == EINTR) {
         continue;
@@ -331,9 +538,9 @@ void bridgeSocketPair(int leftFd, int rightFd) {
     }
 
     if (ret == 0) {
-      if (++idleRounds >= kMaxIdleRounds) {
+      if (std::chrono::steady_clock::now() - lastDataAt >= idleTimeout) {
         LOG_WARN("Bridge idle timeout (" +
-                 std::to_string(kMaxIdleRounds * 60) +
+                 std::to_string(idleTimeout.count()) +
                  "s), closing socket pair");
         break;
       }
@@ -370,7 +577,7 @@ void bridgeSocketPair(int leftFd, int rightFd) {
     }
 
     if (dataFlowed) {
-      idleRounds = 0;
+      lastDataAt = std::chrono::steady_clock::now();
     }
   }
 }
@@ -378,17 +585,21 @@ void bridgeSocketPair(int leftFd, int rightFd) {
 void submitForwardTask(std::function<void()> task) {
 #ifdef SSHJUMP_USE_FOLLY
   static std::shared_ptr<folly::CPUThreadPoolExecutor> executor = []() {
-    auto ex = std::make_shared<folly::CPUThreadPoolExecutor>(4);
+    const int threadCount = std::max(1, gForwardTaskThreads.load());
+    auto ex = std::make_shared<folly::CPUThreadPoolExecutor>(threadCount);
     LOG_INFO(
-        "Forward task executor initialized with Folly CPUThreadPoolExecutor");
+        "Forward task executor initialized with Folly CPUThreadPoolExecutor, "
+        "threads=" + std::to_string(threadCount));
     return ex;
   }();
   executor->add(std::move(task));
 #else
   static std::shared_ptr<ThreadPool> executor = []() {
-    auto ex = std::make_shared<ThreadPool>(4);
+    const int threadCount = std::max(1, gForwardTaskThreads.load());
+    auto ex = std::make_shared<ThreadPool>(threadCount);
     ex->start();
-    LOG_INFO("Forward task executor initialized with internal ThreadPool");
+    LOG_INFO("Forward task executor initialized with internal ThreadPool, "
+             "threads=" + std::to_string(threadCount));
     return ex;
   }();
   executor->submit(std::move(task));
@@ -615,6 +826,7 @@ void AgentConnection::handleRegister(const std::string& payload) {
   using json = nlohmann::json;
 
   json registerJson;
+  std::string responseToken;
   try {
     json raw = json::parse(payload);
     if (!raw.is_object() || !raw.contains("secure")) {
@@ -640,6 +852,7 @@ void AgentConnection::handleRegister(const std::string& payload) {
       sendResponse(false, "Unauthorized");
       return;
     }
+    responseToken = tokenUsed;
 
     registerJson = json::parse(decrypted);
     // 安全校验：解密后的 agentId 必须与 hint 一致（防止 shared token 路径下
@@ -669,7 +882,29 @@ void AgentConnection::handleRegister(const std::string& payload) {
 
   if (info.agentId.empty()) {
     LOG_WARN("Invalid register payload: missing agentId");
-    sendResponse(false, "Missing agentId");
+    if (!responseToken.empty()) {
+      sendSecureResponse(false, "Missing agentId", responseToken);
+    } else {
+      sendResponse(false, "Missing agentId");
+    }
+    return;
+  }
+
+  const int64_t requestTs = registerJson.value("ts", static_cast<int64_t>(0));
+  if (!validateTimestampWindow(requestTs)) {
+    LOG_WARN("Invalid register payload: timestamp rejected for agent " +
+             info.agentId);
+    sendSecureResponse(false, "Request expired", responseToken);
+    return;
+  }
+
+  const std::string nonce = trimString(registerJson.value("nonce", ""));
+  if (!manager_ ||
+      !manager_->validateAndRememberRegisterNonce(info.agentId, nonce,
+                                                  kSecureNonceTtlSeconds)) {
+    LOG_WARN("Invalid register payload: replay detected for agent " +
+             info.agentId);
+    sendSecureResponse(false, "Replay detected", responseToken);
     return;
   }
 
@@ -697,10 +932,10 @@ void AgentConnection::handleRegister(const std::string& payload) {
     agentId_ = info.agentId;
     LOG_INFO("Agent registered: " + agentId_ + " (" + info.hostname +
              "), services: " + std::to_string(info.services.size()));
-    sendResponse(true, "Registered successfully");
+    sendSecureResponse(true, "Registered successfully", responseToken);
   } else {
     LOG_WARN("Agent registration failed: " + info.agentId);
-    sendResponse(false, "Registration failed");
+    sendSecureResponse(false, "Registration failed", responseToken);
   }
 }
 
@@ -711,14 +946,31 @@ void AgentConnection::handleHeartbeat(const std::string& /*payload*/) {
   }
 
   manager_->updateHeartbeat(agentId_);
-  sendResponse(true, "Heartbeat received");
+  auto agent = manager_->getAgent(agentId_);
+  if (!agent || agent->authToken.empty()) {
+    sendResponse(true, "Heartbeat received");
+    return;
+  }
+
+  sendSecureResponse(true, "Heartbeat received", agent->authToken);
 }
 
 void AgentConnection::handleUnregister(const std::string& /*payload*/) {
+  std::string responseToken;
+  if (!agentId_.empty() && manager_) {
+    auto agent = manager_->getAgent(agentId_);
+    if (agent) {
+      responseToken = agent->authToken;
+    }
+  }
   if (!agentId_.empty()) {
     manager_->unregisterAgent(agentId_);
   }
-  sendResponse(true, "Unregistered successfully");
+  if (!responseToken.empty()) {
+    sendSecureResponse(true, "Unregistered successfully", responseToken);
+  } else {
+    sendResponse(true, "Unregistered successfully");
+  }
 }
 
 void AgentConnection::handleCommand(const std::string& payload) {
@@ -1054,7 +1306,44 @@ void AgentConnection::handleCommand(const std::string& payload) {
 void AgentConnection::sendResponse(bool success, const std::string& message) {
   std::string payload = success ? "OK:" + message : "ERR:" + message;
   AgentMessage msg = AgentMessage::create(AgentMessageType::RESPONSE, payload);
+  auto data = msg.serialize();
+  bool needEnableWrite = false;
+  bool needModifyEvents = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    writeBuffer_.append(reinterpret_cast<const char*>(data.data()),
+                        data.size());
+    needEnableWrite = writeBuffer_.readableBytes() > 0;
+    if (writeEventEnabled_ != needEnableWrite) {
+      writeEventEnabled_ = needEnableWrite;
+      needModifyEvents = true;
+    }
+  }
 
+  if (needModifyEvents && manager_) {
+    manager_->setConnectionWriteInterest(fd_, needEnableWrite);
+  }
+
+  // 立即尝试写入，降低响应延迟
+  onWrite();
+}
+
+void AgentConnection::sendSecureResponse(bool success,
+                                         const std::string& message,
+                                         const std::string& token) {
+  if (token.empty()) {
+    sendResponse(success, message);
+    return;
+  }
+
+  const std::string plaintext = success ? "OK:" + message : "ERR:" + message;
+  std::string payload;
+  if (!buildSecurePayload(plaintext, token, payload)) {
+    sendResponse(success, message);
+    return;
+  }
+
+  AgentMessage msg = AgentMessage::create(AgentMessageType::RESPONSE, payload);
   auto data = msg.serialize();
   bool needEnableWrite = false;
   bool needModifyEvents = false;
@@ -1122,7 +1411,9 @@ ClusterManager::ClusterManager()
       reverseTunnelRetries_(kDefaultReverseTunnelRetries),
       reverseTunnelAcceptTimeoutMs_(kDefaultTunnelAcceptTimeoutMs),
       reverseTunnelPortCursor_(
-          static_cast<unsigned>(kDefaultReverseTunnelPortStart)) {}
+          static_cast<unsigned>(kDefaultReverseTunnelPortStart)),
+      forwardTaskThreads_(kDefaultForwardTaskThreads),
+      bridgeIdleTimeoutSeconds_(kDefaultBridgeIdleTimeoutSeconds) {}
 
 ClusterManager::~ClusterManager() { stop(); }
 
@@ -1222,6 +1513,32 @@ void ClusterManager::setReverseTunnelOptions(int portStart, int portEnd,
 std::tuple<int, int, int, int> ClusterManager::getReverseTunnelOptions() const {
   return std::make_tuple(reverseTunnelPortStart_, reverseTunnelPortEnd_,
                          reverseTunnelRetries_, reverseTunnelAcceptTimeoutMs_);
+}
+
+void ClusterManager::setForwardRuntimeOptions(int forwardTaskThreads,
+                                              int bridgeIdleTimeoutSeconds) {
+  if (forwardTaskThreads <= 0 || forwardTaskThreads > 256) {
+    LOG_WARN("Invalid forward task thread count provided, fallback to default");
+    forwardTaskThreads = kDefaultForwardTaskThreads;
+  }
+  if (bridgeIdleTimeoutSeconds <= 0 || bridgeIdleTimeoutSeconds > 86400) {
+    LOG_WARN("Invalid bridge idle timeout provided, fallback to default");
+    bridgeIdleTimeoutSeconds = kDefaultBridgeIdleTimeoutSeconds;
+  }
+
+  forwardTaskThreads_ = forwardTaskThreads;
+  bridgeIdleTimeoutSeconds_ = bridgeIdleTimeoutSeconds;
+  gForwardTaskThreads.store(forwardTaskThreads_);
+  gBridgeIdleTimeoutSeconds.store(bridgeIdleTimeoutSeconds_);
+
+  LOG_INFO("Forward runtime options updated: threads=" +
+           std::to_string(forwardTaskThreads_) +
+           ", bridgeIdleTimeoutSeconds=" +
+           std::to_string(bridgeIdleTimeoutSeconds_));
+}
+
+std::tuple<int, int> ClusterManager::getForwardRuntimeOptions() const {
+  return std::make_tuple(forwardTaskThreads_, bridgeIdleTimeoutSeconds_);
 }
 
 bool ClusterManager::start() {
@@ -1849,16 +2166,44 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
       }
 
       const std::string requestId = generateUUID();
-      std::string payload = "{";
-      payload += "\"requestId\":\"" + requestId + "\",";
-      payload += "\"targetHost\":\"127.0.0.1\",";
-      payload += "\"targetPort\":" + std::to_string(targetPort) + ",";
-      payload += "\"connectBackPort\":" + std::to_string(connectBackPort);
-      payload += ",\"connectBackHost\":\"" + connectBackHost + "\"";
-      payload += "}";
+      const std::string callbackToken = generateRandomHexToken(32);
+      const std::string forwardNonce = generateRandomHexToken(16);
+      if (callbackToken.empty() || forwardNonce.empty()) {
+        lastReverseFailure = "secure_material_generation_failed";
+        LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                 std::to_string(maxAttempts) +
+                 " failed to generate secure callback material for agent " +
+                 agentId + ", requestId=" + requestId);
+        closeSocket(listenFd);
+        continue;
+      }
 
-      const AgentMessage request =
-          AgentMessage::create(AgentMessageType::FORWARD_REQUEST, payload);
+      nlohmann::json forwardReq;
+      forwardReq["requestId"] = requestId;
+      forwardReq["targetHost"] = "127.0.0.1";
+      forwardReq["targetPort"] = targetPort;
+      forwardReq["connectBackPort"] = connectBackPort;
+      forwardReq["connectBackHost"] = connectBackHost;
+      forwardReq["callbackToken"] = callbackToken;
+      forwardReq["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::system_clock::now().time_since_epoch())
+                              .count();
+      forwardReq["nonce"] = forwardNonce;
+
+      std::string securePayload;
+      if (!buildSecurePayload(forwardReq.dump(), agent->authToken,
+                              securePayload)) {
+        lastReverseFailure = "secure_payload_build_failed";
+        LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
+                 std::to_string(maxAttempts) +
+                 " failed to encrypt FORWARD_REQUEST for agent " + agentId +
+                 ", requestId=" + requestId);
+        closeSocket(listenFd);
+        continue;
+      }
+
+      const AgentMessage request = AgentMessage::create(
+          AgentMessageType::FORWARD_REQUEST, securePayload);
       if (!controlConn->sendMessage(request)) {
         lastReverseFailure = "send_forward_request_failed";
         LOG_WARN("Reverse tunnel attempt " + std::to_string(attempt) + "/" +
@@ -1884,17 +2229,42 @@ int ClusterManager::establishForwardConnection(const std::string& agentId,
         if (tunnelFd >= 0) {
           const std::string actualPeerIp = sockaddrToIp(
               reinterpret_cast<struct sockaddr*>(&tunnelPeer));
-          if (!expectedPeerIp.empty() &&
-              (!actualPeerIp.empty() && actualPeerIp != expectedPeerIp)) {
-            LOG_ERROR("Reverse tunnel rejected: peer " + actualPeerIp +
-                      " does not match agent " + agentId +
-                      " control connection peer " + expectedPeerIp +
-                      ", requestId=" + requestId);
+          setNonBlocking(tunnelFd);
+          if (!expectedPeerIp.empty() && !actualPeerIp.empty() &&
+              actualPeerIp != expectedPeerIp) {
+            LOG_WARN("Reverse tunnel peer IP mismatch for agent " + agentId +
+                     ", requestId=" + requestId + ", callbackPeer=" +
+                     actualPeerIp + ", controlPeer=" + expectedPeerIp +
+                     "; falling back to callback token validation");
+          }
+
+          nlohmann::json callbackAuth;
+          if (!receiveFramedJson(tunnelFd, kCallbackAuthTimeoutMs,
+                                 callbackAuth)) {
+            LOG_ERROR("Reverse tunnel rejected: missing callback auth frame "
+                      "for agent " +
+                      agentId + ", requestId=" + requestId);
             closeSocket(tunnelFd);
             closeSocket(listenFd);
-            lastReverseFailure = "peer_mismatch";
+            lastReverseFailure = "callback_auth_missing";
             continue;
           }
+
+          const std::string authRequestId =
+              trimString(callbackAuth.value("requestId", ""));
+          const std::string authCallbackToken =
+              trimString(callbackAuth.value("callbackToken", ""));
+          if (!timingSafeEqual(authRequestId, requestId) ||
+              !timingSafeEqual(authCallbackToken, callbackToken)) {
+            LOG_ERROR("Reverse tunnel rejected: invalid callback auth for "
+                      "agent " +
+                      agentId + ", requestId=" + requestId);
+            closeSocket(tunnelFd);
+            closeSocket(listenFd);
+            lastReverseFailure = "callback_auth_invalid";
+            continue;
+          }
+
           setTcpNoDelay(tunnelFd);
           closeSocket(listenFd);
           reverseTunnelEstablished = true;
@@ -2215,31 +2585,21 @@ void ClusterManager::setAdminToken(const std::string& token) {
 
 bool ClusterManager::validateAndRememberAdminNonce(const std::string& nonce,
                                                    int ttlSeconds) {
-  const std::string trimmedNonce = trimString(nonce);
-  if (trimmedNonce.empty()) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return validateAndRememberNonce(adminNonces_, nonce, ttlSeconds);
+}
+
+bool ClusterManager::validateAndRememberRegisterNonce(
+    const std::string& agentId, const std::string& nonce, int ttlSeconds) {
+  const std::string trimmedAgentId = trimString(agentId);
+  if (trimmedAgentId.empty()) {
     return false;
   }
-
-  const int effectiveTtl = std::max(60, ttlSeconds);
-  const auto now = std::chrono::steady_clock::now();
-  const auto expireBefore = now - std::chrono::seconds(effectiveTtl);
 
   std::lock_guard<std::mutex> lock(mutex_);
-
-  for (auto it = adminNonces_.begin(); it != adminNonces_.end();) {
-    if (it->second < expireBefore) {
-      it = adminNonces_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-
-  if (adminNonces_.find(trimmedNonce) != adminNonces_.end()) {
-    return false;
-  }
-
-  adminNonces_[trimmedNonce] = now;
-  return true;
+  return validateAndRememberNonce(registerNonces_,
+                                  trimmedAgentId + ":" + trimString(nonce),
+                                  ttlSeconds);
 }
 
 void ClusterManager::checkAgentHealth() {
@@ -2342,11 +2702,20 @@ bool ClusterAgentClient::registerToCluster(
   }
 
   using json = nlohmann::json;
+  const std::string registerNonce = generateRandomHexToken(16);
+  if (registerNonce.empty()) {
+    LOG_ERROR("Failed to generate secure register nonce");
+    return false;
+  }
   json registerReq;
   registerReq["agentId"] = agentId_;
   registerReq["hostname"] = hostname_;
   registerReq["ipAddress"] = localIp;
   registerReq["authToken"] = authToken_;
+  registerReq["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  registerReq["nonce"] = registerNonce;
   registerReq["services"] = json::array();
   for (const auto& service : services) {
     json item;
@@ -2392,10 +2761,26 @@ bool ClusterAgentClient::registerToCluster(
   }
 
   if (response.type != AgentMessageType::RESPONSE ||
-      response.payload.rfind("OK:", 0) != 0) {
+      response.payload.empty()) {
     const std::string detail =
         response.payload.empty() ? std::string("malformed response")
                                  : response.payload;
+    LOG_ERROR("Register rejected by cluster: " + detail);
+    disconnect();
+    return false;
+  }
+
+  std::string responsePayload;
+  if (!decryptSecurePayload(response.payload, authToken_, responsePayload)) {
+    LOG_ERROR("Register rejected by cluster: insecure or invalid response");
+    disconnect();
+    return false;
+  }
+
+  if (responsePayload.rfind("OK:", 0) != 0) {
+    const std::string detail =
+        responsePayload.empty() ? std::string("malformed response")
+                                : responsePayload;
     LOG_ERROR("Register rejected by cluster: " + detail);
     disconnect();
     return false;
@@ -2418,6 +2803,12 @@ void ClusterAgentClient::stop() {
   }
 
   disconnect();
+}
+
+bool ClusterAgentClient::validateAndRememberServerNonce(const std::string& nonce,
+                                                        int ttlSeconds) {
+  std::lock_guard<std::recursive_mutex> lock(mutex_);
+  return validateAndRememberNonce(serverNonces_, nonce, ttlSeconds);
 }
 
 bool ClusterAgentClient::sendHeartbeat() {
@@ -2539,17 +2930,33 @@ void ClusterAgentClient::workerLoop() {
 
 void ClusterAgentClient::handleServerMessage(const AgentMessage& msg) {
   switch (msg.type) {
-    case AgentMessageType::FORWARD_REQUEST:
-      handleForwardRequest(msg.payload);
+    case AgentMessageType::FORWARD_REQUEST: {
+      std::string decrypted;
+      if (!decryptSecurePayload(msg.payload, authToken_, decrypted)) {
+        LOG_WARN("Invalid secure FORWARD_REQUEST payload");
+        disconnect();
+        break;
+      }
+      handleForwardRequest(decrypted);
       break;
+    }
     case AgentMessageType::RESPONSE:
-      if (msg.payload.rfind("ERR:", 0) == 0) {
-        LOG_WARN("Received server error response: " + msg.payload);
+    {
+      std::string responsePayload;
+      if (!decryptSecurePayload(msg.payload, authToken_, responsePayload)) {
+        LOG_WARN("Invalid secure server response");
+        disconnect();
+        break;
+      }
+
+      if (responsePayload.rfind("ERR:", 0) == 0) {
+        LOG_WARN("Received server error response: " + responsePayload);
         disconnect();
       } else {
-        LOG_DEBUG("Received server response: " + msg.payload);
+        LOG_DEBUG("Received server response: " + responsePayload);
       }
       break;
+    }
     default:
       LOG_DEBUG("Ignoring unsupported server message type: " +
                 std::to_string(static_cast<int>(msg.type)));
@@ -2582,10 +2989,34 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
       trimString(req.value("connectBackHost", ""));
   const int targetPort = req.value("targetPort", 22);
   const int connectBackPort = req.value("connectBackPort", 0);
+  const std::string callbackToken = trimString(req.value("callbackToken", ""));
+  const int64_t requestTs = req.value("ts", static_cast<int64_t>(0));
+  const std::string nonce = trimString(req.value("nonce", ""));
 
   if (targetPort <= 0 || targetPort > 65535 || connectBackPort <= 0 ||
       connectBackPort > 65535) {
     LOG_WARN("Invalid forward request payload: " + payload);
+    return;
+  }
+
+  if (!validateTimestampWindow(requestTs)) {
+    LOG_WARN("Invalid forward request payload: expired request");
+    return;
+  }
+
+  if (!validateAndRememberServerNonce(nonce, kSecureNonceTtlSeconds)) {
+    LOG_WARN("Invalid forward request payload: replay detected");
+    return;
+  }
+
+  if (callbackToken.empty()) {
+    LOG_WARN("Invalid forward request payload: missing callback token");
+    return;
+  }
+
+  if (!isLoopbackTargetHost(targetHost)) {
+    LOG_WARN("Invalid forward request payload: non-loopback targetHost " +
+             targetHost);
     return;
   }
 
@@ -2595,7 +3026,7 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
       connectBackHost.empty() ? serverAddr_ : connectBackHost;
 
   submitForwardTask([requestLabel, callbackHost, connectBackPort, targetHost,
-                     targetPort]() {
+                     targetPort, callbackToken]() {
     int targetFd =
         connectTcpWithTimeout(targetHost, targetPort, kConnectTimeoutMs);
     if (targetFd < 0) {
@@ -2611,6 +3042,17 @@ void ClusterAgentClient::handleForwardRequest(const std::string& payload) {
       LOG_ERROR("Forward request " + requestLabel +
                 " failed: cannot connect back to server " + callbackHost + ":" +
                 std::to_string(connectBackPort));
+      closeSocket(targetFd);
+      return;
+    }
+
+    nlohmann::json callbackAuth;
+    callbackAuth["requestId"] = requestLabel;
+    callbackAuth["callbackToken"] = callbackToken;
+    if (!sendFramedJson(tunnelFd, callbackAuth, kCallbackAuthTimeoutMs)) {
+      LOG_ERROR("Forward request " + requestLabel +
+                " failed: cannot send callback auth frame");
+      closeSocket(tunnelFd);
       closeSocket(targetFd);
       return;
     }

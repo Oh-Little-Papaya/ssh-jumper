@@ -228,7 +228,7 @@ test_asset_list() {
 }
 
 # ============================================
-# 测试 4: 用户资产可见性验证（默认全资产）
+# 测试 4: 用户资产可见性验证（按示例权限文件）
 # ============================================
 test_user_permissions() {
     echo ""
@@ -236,7 +236,7 @@ test_user_permissions() {
     log_info "测试 4: 用户资产可见性验证"
     log_info "========================================"
     
-    # 测试 developer 用户（默认可见全部资产）
+    # 测试 developer 用户（仅可见 web/api）
     log_info "测试 developer 用户..."
     local dev_output dev_assets
     dev_output="$(capture_session_with_retry "$DEVELOPER_USER" "$DEVELOPER_PASS" "sleep 2; echo q" 25 4 "资产列表")"
@@ -246,12 +246,12 @@ test_user_permissions() {
     echo "$dev_assets"
 
     if ! contains_asset "web-server-01" "$dev_assets" || ! contains_asset "api-server-01" "$dev_assets" || \
-       ! contains_asset "db-server-01" "$dev_assets" || ! contains_asset "cache-server-01" "$dev_assets"; then
+       contains_asset "db-server-01" "$dev_assets" || contains_asset "cache-server-01" "$dev_assets"; then
         log_error "developer 资产可见性校验失败"
         return 1
     fi
 
-    # 测试 ops 用户（默认可见全部资产）
+    # 测试 ops 用户（可见 web/api/cache，不可见 db-server-01）
     log_info "测试 ops 用户..."
     local ops_output ops_assets
     ops_output="$(capture_session_with_retry "$OPS_USER" "$OPS_PASS" "sleep 2; echo q" 25 4 "资产列表")"
@@ -261,7 +261,7 @@ test_user_permissions() {
     echo "$ops_assets"
 
     if ! contains_asset "web-server-01" "$ops_assets" || ! contains_asset "api-server-01" "$ops_assets" || \
-       ! contains_asset "cache-server-01" "$ops_assets" || ! contains_asset "db-server-01" "$ops_assets"; then
+       ! contains_asset "cache-server-01" "$ops_assets" || contains_asset "db-server-01" "$ops_assets"; then
         log_error "ops 资产可见性校验失败"
         return 1
     fi
@@ -360,8 +360,8 @@ show_env_info() {
     echo ""
     echo "测试用户:"
     echo "  - $JUMP_USER (管理员，访问所有资产)"
-    echo "  - $DEVELOPER_USER (开发者，默认访问所有资产)"
-    echo "  - $OPS_USER (运维，默认访问所有资产)"
+    echo "  - $DEVELOPER_USER (开发者，访问 web/api)"
+    echo "  - $OPS_USER (运维，访问 web/api/cache)"
     echo ""
     echo "Agent 资产:"
     echo "  - web-server-01"

@@ -13,6 +13,8 @@ reverse_tunnel_port_start = 38000
 reverse_tunnel_port_end = 38199
 reverse_tunnel_retries = 3
 reverse_tunnel_accept_timeout_ms = 7000
+forward_task_threads = 8
+bridge_idle_timeout_seconds = 300
 ```
 
 并在防火墙放行该端口池的入站流量（Agent -> Jump Server）。

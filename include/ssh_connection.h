@@ -141,6 +141,9 @@ class SSHConnection : public std::enable_shared_from_this<SSHConnection> {
   // 交互式会话
   std::shared_ptr<InteractiveSession> interactiveSession_;
 
+  // 延迟到消息回调外启动交互会话，避免在 libssh 回调栈中阻塞。
+  std::atomic<bool> interactiveSessionRequested_{false};
+
   // server 回调结构（生命周期需覆盖整个 session）
   ssh_server_callbacks_struct serverCallbacks_;
 };

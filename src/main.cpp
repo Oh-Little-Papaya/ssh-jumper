@@ -59,10 +59,14 @@ void printUsage(const char* program) {
               << "      --default-target-password <pass>   Default target SSH password\n"
               << "      --default-target-private-key <path>    Default target private key path\n"
               << "      --default-target-key-password <pass>   Default target key password\n"
+              << "      --target-known-hosts-file <path>   Target known_hosts file (default: /var/lib/ssh_jump/target_known_hosts)\n"
+              << "      --target-host-key-trust-on-first-use <true|false> Accept new target host keys automatically (default: true)\n"
               << "      --reverse-tunnel-port-start <port> Reverse tunnel port pool start (default: 38000)\n"
               << "      --reverse-tunnel-port-end <port>   Reverse tunnel port pool end (default: 38199)\n"
               << "      --reverse-tunnel-retries <n>       Reverse tunnel retries (default: 3)\n"
               << "      --reverse-tunnel-accept-timeout-ms <ms> Reverse tunnel accept timeout (default: 7000)\n"
+              << "      --forward-task-threads <n>         Forward relay worker threads (default: 4)\n"
+              << "      --bridge-idle-timeout-seconds <n>  Forward relay idle timeout (default: 300)\n"
               << "      --max-connections-per-minute <n>   SSH connection rate limit (default: 0, unlimited)\n"
               << "      --pid-file <path>                  PID file path\n"
               << "      --tmux-enabled <true|false>        Enable tmux reconnect sessions (default: false)\n"
@@ -356,10 +360,14 @@ int main(int argc, char* argv[]) {
     std::string defaultTargetPassword;
     std::string defaultTargetPrivateKey;
     std::string defaultTargetKeyPassword;
+    std::string targetKnownHostsFile = SecurityConfig().targetKnownHostsFile;
+    bool targetHostKeyTrustOnFirstUse = SecurityConfig().targetHostKeyTrustOnFirstUse;
     int reverseTunnelPortStart = 38000;
     int reverseTunnelPortEnd = 38199;
     int reverseTunnelRetries = 3;
     int reverseTunnelAcceptTimeoutMs = 7000;
+    int forwardTaskThreads = 4;
+    int bridgeIdleTimeoutSeconds = 300;
     int maxConnectionsPerMinute = 0;
     bool runAsDaemon = false;
     bool verbose = false;
@@ -379,10 +387,14 @@ int main(int argc, char* argv[]) {
         OPT_DEFAULT_TARGET_PASSWORD,
         OPT_DEFAULT_TARGET_PRIVATE_KEY,
         OPT_DEFAULT_TARGET_KEY_PASSWORD,
+        OPT_TARGET_KNOWN_HOSTS_FILE,
+        OPT_TARGET_HOST_KEY_TRUST_ON_FIRST_USE,
         OPT_RT_PORT_START,
         OPT_RT_PORT_END,
         OPT_RT_RETRIES,
         OPT_RT_ACCEPT_TIMEOUT_MS,
+        OPT_FORWARD_TASK_THREADS,
+        OPT_BRIDGE_IDLE_TIMEOUT_SECONDS,
         OPT_MAX_CONNECTIONS_PER_MINUTE,
         OPT_USERS_FILE,
         OPT_AGENT_TOKEN_FILE,
@@ -409,10 +421,14 @@ int main(int argc, char* argv[]) {
         {"default-target-password", required_argument, nullptr, OPT_DEFAULT_TARGET_PASSWORD},
         {"default-target-private-key", required_argument, nullptr, OPT_DEFAULT_TARGET_PRIVATE_KEY},
         {"default-target-key-password", required_argument, nullptr, OPT_DEFAULT_TARGET_KEY_PASSWORD},
+        {"target-known-hosts-file", required_argument, nullptr, OPT_TARGET_KNOWN_HOSTS_FILE},
+        {"target-host-key-trust-on-first-use", required_argument, nullptr, OPT_TARGET_HOST_KEY_TRUST_ON_FIRST_USE},
         {"reverse-tunnel-port-start", required_argument, nullptr, OPT_RT_PORT_START},
         {"reverse-tunnel-port-end", required_argument, nullptr, OPT_RT_PORT_END},
         {"reverse-tunnel-retries", required_argument, nullptr, OPT_RT_RETRIES},
         {"reverse-tunnel-accept-timeout-ms", required_argument, nullptr, OPT_RT_ACCEPT_TIMEOUT_MS},
+        {"forward-task-threads", required_argument, nullptr, OPT_FORWARD_TASK_THREADS},
+        {"bridge-idle-timeout-seconds", required_argument, nullptr, OPT_BRIDGE_IDLE_TIMEOUT_SECONDS},
         {"max-connections-per-minute", required_argument, nullptr, OPT_MAX_CONNECTIONS_PER_MINUTE},
         {"pid-file", required_argument, nullptr, OPT_PID_FILE},
         {"tmux-enabled", required_argument, nullptr, OPT_TMUX_ENABLED},
@@ -505,6 +521,22 @@ int main(int argc, char* argv[]) {
             case OPT_DEFAULT_TARGET_KEY_PASSWORD:
                 defaultTargetKeyPassword = optarg;
                 break;
+            case OPT_TARGET_KNOWN_HOSTS_FILE:
+                targetKnownHostsFile = trimString(optarg);
+                break;
+            case OPT_TARGET_HOST_KEY_TRUST_ON_FIRST_USE: {
+                const std::string value = trimString(optarg);
+                if (value == "true" || value == "1" || value == "yes" || value == "on") {
+                    targetHostKeyTrustOnFirstUse = true;
+                } else if (value == "false" || value == "0" || value == "no" || value == "off") {
+                    targetHostKeyTrustOnFirstUse = false;
+                } else {
+                    std::cerr << "Invalid --target-host-key-trust-on-first-use value: "
+                              << optarg << std::endl;
+                    return 1;
+                }
+                break;
+            }
             case OPT_RT_PORT_START:
                 reverseTunnelPortStart = safeStringToInt(optarg, 38000);
                 break;
@@ -516,6 +548,12 @@ int main(int argc, char* argv[]) {
                 break;
             case OPT_RT_ACCEPT_TIMEOUT_MS:
                 reverseTunnelAcceptTimeoutMs = safeStringToInt(optarg, 7000);
+                break;
+            case OPT_FORWARD_TASK_THREADS:
+                forwardTaskThreads = safeStringToInt(optarg, 4);
+                break;
+            case OPT_BRIDGE_IDLE_TIMEOUT_SECONDS:
+                bridgeIdleTimeoutSeconds = safeStringToInt(optarg, 300);
                 break;
             case OPT_MAX_CONNECTIONS_PER_MINUTE:
                 maxConnectionsPerMinute = safeStringToInt(optarg, 0);
@@ -575,8 +613,20 @@ int main(int argc, char* argv[]) {
         std::cerr << "Invalid reverse tunnel accept timeout: " << reverseTunnelAcceptTimeoutMs << std::endl;
         return 1;
     }
+    if (forwardTaskThreads <= 0 || forwardTaskThreads > 256) {
+        std::cerr << "Invalid forward task thread count: " << forwardTaskThreads << std::endl;
+        return 1;
+    }
+    if (bridgeIdleTimeoutSeconds <= 0 || bridgeIdleTimeoutSeconds > 86400) {
+        std::cerr << "Invalid bridge idle timeout: " << bridgeIdleTimeoutSeconds << std::endl;
+        return 1;
+    }
     if (maxConnectionsPerMinute < 0 || maxConnectionsPerMinute > 100000) {
         std::cerr << "Invalid max connections per minute: " << maxConnectionsPerMinute << std::endl;
+        return 1;
+    }
+    if (targetKnownHostsFile.empty()) {
+        std::cerr << "Invalid target known_hosts file path" << std::endl;
         return 1;
     }
 
@@ -622,6 +672,8 @@ int main(int argc, char* argv[]) {
         config.cluster.reverseTunnelPortEnd = reverseTunnelPortEnd;
         config.cluster.reverseTunnelRetries = reverseTunnelRetries;
         config.cluster.reverseTunnelAcceptTimeoutMs = reverseTunnelAcceptTimeoutMs;
+        config.cluster.forwardTaskThreads = forwardTaskThreads;
+        config.cluster.bridgeIdleTimeoutSeconds = bridgeIdleTimeoutSeconds;
 
         config.assets.permissionsFile = AssetsConfig().permissionsFile;
 
@@ -630,6 +682,8 @@ int main(int argc, char* argv[]) {
         config.security.defaultTargetPassword = defaultTargetPassword;
         config.security.defaultTargetPrivateKey = defaultTargetPrivateKey;
         config.security.defaultTargetPrivateKeyPassword = defaultTargetKeyPassword;
+        config.security.targetKnownHostsFile = targetKnownHostsFile;
+        config.security.targetHostKeyTrustOnFirstUse = targetHostKeyTrustOnFirstUse;
         config.security.maxConnectionsPerMinute = maxConnectionsPerMinute;
 
         config.tmux.enabled = tmuxEnabled;
@@ -733,6 +787,9 @@ int main(int argc, char* argv[]) {
         clusterConfig.reverseTunnelPortEnd,
         clusterConfig.reverseTunnelRetries,
         clusterConfig.reverseTunnelAcceptTimeoutMs);
+    clusterManager->setForwardRuntimeOptions(
+        clusterConfig.forwardTaskThreads,
+        clusterConfig.bridgeIdleTimeoutSeconds);
 
     if (!clusterConfig.agentTokenFile.empty()) {
         std::error_code tokenEc;
@@ -782,6 +839,8 @@ int main(int argc, char* argv[]) {
     // 创建资产管理器
     auto assetManager = std::make_shared<AssetManager>();
     assetManager->initialize(clusterManager);
+    const bool permissionsLoaded =
+        assetManager->loadUserPermissions(runtimeConfig.assets.permissionsFile);
 
     // 创建并加载子节点注册表（公网管理节点配置，纯 CLI）
     auto nodeRegistry = std::make_shared<ChildNodeRegistry>();
@@ -792,18 +851,31 @@ int main(int argc, char* argv[]) {
     }
     LOG_INFO("Child node registry ready, count=" + std::to_string(nodeRegistry->size()));
     
-    // 权限策略简化：所有已配置用户默认允许访问全部资产
+    // 优先使用权限文件；仅对未配置权限的已启用用户兜底放行为 allow_all。
     const auto& users = runtimeConfig.users;
+    int fallbackPermissionCount = 0;
     for (const auto& pair : users) {
         if (!pair.second.enabled) {
+            continue;
+        }
+        if (permissionsLoaded && assetManager->getUserPermission(pair.first).has_value()) {
             continue;
         }
         UserPermission permission;
         permission.username = pair.first;
         permission.allowAll = true;
         assetManager->upsertUserPermission(permission);
+        ++fallbackPermissionCount;
     }
-    LOG_INFO("Permissions initialized: allow_all=true for all configured users");
+    if (permissionsLoaded) {
+        LOG_INFO("Permissions loaded from file: " +
+                 runtimeConfig.assets.permissionsFile +
+                 ", fallback allow_all users=" +
+                 std::to_string(fallbackPermissionCount));
+    } else {
+        LOG_WARN("Permissions file unavailable, fallback allow_all for enabled users=" +
+                 std::to_string(fallbackPermissionCount));
+    }
     
     // 创建并启动 SSH 服务器
     auto sshServer = std::make_unique<SSHServer>();

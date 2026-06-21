@@ -396,6 +396,8 @@ void ConfigManager::parseLine(const std::string& line, const std::string& curren
         else if (key == "reverse_tunnel_port_end") config.cluster.reverseTunnelPortEnd = safeStringToInt(value, 38199);
         else if (key == "reverse_tunnel_retries") config.cluster.reverseTunnelRetries = safeStringToInt(value, 3);
         else if (key == "reverse_tunnel_accept_timeout_ms") config.cluster.reverseTunnelAcceptTimeoutMs = safeStringToInt(value, 7000);
+        else if (key == "forward_task_threads") config.cluster.forwardTaskThreads = safeStringToInt(value, 4);
+        else if (key == "bridge_idle_timeout_seconds") config.cluster.bridgeIdleTimeoutSeconds = safeStringToInt(value, 300);
     }
     else if (currentSection == "assets") {
         if (key == "refresh_interval") config.assets.refreshInterval = safeStringToInt(value, 30);
@@ -418,6 +420,8 @@ void ConfigManager::parseLine(const std::string& line, const std::string& curren
         else if (key == "allow_sftp") config.security.allowSftp = (value == "true");
         else if (key == "max_connections_per_minute") config.security.maxConnectionsPerMinute = safeStringToInt(value, 0);
         else if (key == "users_file") config.security.usersFile = value;
+        else if (key == "target_known_hosts_file") config.security.targetKnownHostsFile = value;
+        else if (key == "target_host_key_trust_on_first_use") config.security.targetHostKeyTrustOnFirstUse = (value == "true");
         else if (key == "default_target_user") config.security.defaultTargetUser = value;
         else if (key == "default_target_password") config.security.defaultTargetPassword = value;
         else if (key == "default_target_private_key") config.security.defaultTargetPrivateKey = value;
@@ -742,9 +746,26 @@ bool ConfigManager::validate() {
         return false;
     }
 
+    if (serverConfig_.cluster.forwardTaskThreads <= 0 ||
+        serverConfig_.cluster.forwardTaskThreads > 256) {
+        LOG_ERROR("Invalid forward task thread count");
+        return false;
+    }
+
+    if (serverConfig_.cluster.bridgeIdleTimeoutSeconds <= 0 ||
+        serverConfig_.cluster.bridgeIdleTimeoutSeconds > 86400) {
+        LOG_ERROR("Invalid bridge idle timeout");
+        return false;
+    }
+
     if (serverConfig_.security.maxConnectionsPerMinute < 0 ||
         serverConfig_.security.maxConnectionsPerMinute > 100000) {
         LOG_ERROR("Invalid max connections per minute");
+        return false;
+    }
+
+    if (serverConfig_.security.targetKnownHostsFile.empty()) {
+        LOG_ERROR("Invalid target known_hosts file path");
         return false;
     }
 
@@ -781,6 +802,8 @@ void ConfigManager::printConfig() {
              std::to_string(serverConfig_.cluster.reverseTunnelPortEnd));
     LOG_INFO("  Reverse Tunnel Retries: " + std::to_string(serverConfig_.cluster.reverseTunnelRetries));
     LOG_INFO("  Reverse Tunnel Accept Timeout(ms): " + std::to_string(serverConfig_.cluster.reverseTunnelAcceptTimeoutMs));
+    LOG_INFO("  Forward Task Threads: " + std::to_string(serverConfig_.cluster.forwardTaskThreads));
+    LOG_INFO("  Bridge Idle Timeout(s): " + std::to_string(serverConfig_.cluster.bridgeIdleTimeoutSeconds));
     LOG_INFO("Tmux:");
     LOG_INFO("  Enabled: " + std::string(serverConfig_.tmux.enabled ? "true" : "false"));
     LOG_INFO("  Session Prefix: " + serverConfig_.tmux.sessionPrefix);
@@ -790,6 +813,9 @@ void ConfigManager::printConfig() {
     } else {
         LOG_INFO("  Max Connections Per Minute: " + std::to_string(serverConfig_.security.maxConnectionsPerMinute));
     }
+    LOG_INFO("  Target Known Hosts File: " + serverConfig_.security.targetKnownHostsFile);
+    LOG_INFO("  Target Host Key Trust On First Use: " +
+             std::string(serverConfig_.security.targetHostKeyTrustOnFirstUse ? "true" : "false"));
     LOG_INFO("Management:");
     LOG_INFO("  Child Nodes File: " + serverConfig_.management.childNodesFile);
     LOG_INFO("Users: " + std::to_string(serverConfig_.users.size()));

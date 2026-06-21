@@ -6,19 +6,73 @@
 #include "test_framework.h"
 #include "../include/cluster_manager.h"
 
+#include <nlohmann/json.hpp>
+
 using namespace sshjump;
 
 namespace {
 
+bool buildSecureWirePayload(const std::string& plaintext,
+                            const std::string& token,
+                            std::string& payload) {
+    std::string saltHex;
+    std::string ivHex;
+    std::string ciphertextHex;
+    std::string tagHex;
+    if (!encryptWithTokenAesGcm(plaintext, token, saltHex, ivHex,
+                                ciphertextHex, tagHex)) {
+        return false;
+    }
+
+    nlohmann::json wire;
+    wire["secure"] = {
+        {"alg", "AES-256-GCM"},
+        {"salt", saltHex},
+        {"iv", ivHex},
+        {"ciphertext", ciphertextHex},
+        {"tag", tagHex},
+    };
+    payload = wire.dump();
+    return true;
+}
+
+bool decryptSecureWirePayload(const std::string& payload,
+                              const std::string& token,
+                              std::string& plaintext) {
+    nlohmann::json wire;
+    try {
+        wire = nlohmann::json::parse(payload);
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    if (!wire.is_object() || !wire.contains("secure") ||
+        !wire["secure"].is_object()) {
+        return false;
+    }
+
+    const auto& secure = wire["secure"];
+    return decryptWithTokenAesGcm(trimString(secure.value("salt", "")),
+                                  trimString(secure.value("iv", "")),
+                                  trimString(secure.value("ciphertext", "")),
+                                  trimString(secure.value("tag", "")),
+                                  token, plaintext);
+}
+
 bool sendAgentMessageAndReceiveResponse(AgentMessageType type,
                                         const std::string& payload,
-                                        AgentMessage& response) {
+                                        AgentMessage& response,
+                                        const std::function<void(ClusterManager&)>&
+                                            configureManager = {}) {
     int fds[2] = {-1, -1};
     if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
         return false;
     }
 
     ClusterManager manager;
+    if (configureManager) {
+        configureManager(manager);
+    }
     {
         AgentConnection conn(fds[1], &manager);
         if (!conn.initialize()) {
@@ -313,6 +367,134 @@ TEST(agent_connection_rejects_plaintext_command, "集群管理") {
     return true;
 }
 
+TEST(agent_connection_accepts_secure_register, "集群管理") {
+    nlohmann::json registerReq;
+    registerReq["agentId"] = "secure-agent";
+    registerReq["hostname"] = "secure-host";
+    registerReq["ipAddress"] = "10.10.10.10";
+    registerReq["authToken"] = "shared-token";
+    registerReq["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    registerReq["nonce"] = "nonce-secure-register";
+    registerReq["services"] = nlohmann::json::array();
+
+    std::string securePayload;
+    ASSERT_TRUE(buildSecureWirePayload(registerReq.dump(), "shared-token",
+                                       securePayload));
+
+    AgentMessage response;
+    ASSERT_TRUE(sendAgentMessageAndReceiveResponse(
+        AgentMessageType::REGISTER, securePayload, response,
+        [](ClusterManager& manager) { manager.setSharedToken("shared-token"); }));
+
+    ASSERT_EQ(static_cast<uint8_t>(AgentMessageType::RESPONSE),
+              static_cast<uint8_t>(response.type));
+
+    std::string plaintext;
+    ASSERT_TRUE(decryptSecureWirePayload(response.payload, "shared-token",
+                                         plaintext));
+    ASSERT_EQ("OK:Registered successfully", plaintext);
+
+    return true;
+}
+
+TEST(cluster_manager_register_nonce_replay, "集群管理") {
+    ClusterManager manager;
+    manager.setSharedToken("shared-token");
+
+    nlohmann::json registerReq;
+    registerReq["agentId"] = "replay-agent";
+    registerReq["hostname"] = "replay-host";
+    registerReq["ipAddress"] = "10.10.10.11";
+    registerReq["authToken"] = "shared-token";
+    registerReq["ts"] = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+    registerReq["nonce"] = "nonce-replay-register";
+    registerReq["services"] = nlohmann::json::array();
+
+    std::string securePayload;
+    ASSERT_TRUE(buildSecureWirePayload(registerReq.dump(), "shared-token",
+                                       securePayload));
+
+    auto sendOnce = [&](AgentMessage& response) -> bool {
+        int fds[2] = {-1, -1};
+        if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+            return false;
+        }
+
+        AgentConnection conn(fds[1], &manager);
+        if (!conn.initialize()) {
+            closeSocket(fds[0]);
+            closeSocket(fds[1]);
+            return false;
+        }
+
+        const AgentMessage request =
+            AgentMessage::create(AgentMessageType::REGISTER, securePayload);
+        const auto raw = request.serialize();
+        const ssize_t sent =
+            send(fds[0], raw.data(), raw.size(), MSG_NOSIGNAL);
+        if (sent != static_cast<ssize_t>(raw.size())) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        if (conn.onRead() < 0) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        uint8_t header[9] = {0};
+        const ssize_t headerRead =
+            recv(fds[0], header, sizeof(header), MSG_WAITALL);
+        if (headerRead != static_cast<ssize_t>(sizeof(header))) {
+            closeSocket(fds[0]);
+            return false;
+        }
+
+        const uint32_t payloadLen =
+            (static_cast<uint32_t>(header[5]) << 24) |
+            (static_cast<uint32_t>(header[6]) << 16) |
+            (static_cast<uint32_t>(header[7]) << 8) |
+            static_cast<uint32_t>(header[8]);
+        std::vector<uint8_t> rawResponse(header, header + sizeof(header));
+        if (payloadLen > 0) {
+            std::vector<uint8_t> payloadBytes(payloadLen);
+            const ssize_t payloadRead =
+                recv(fds[0], payloadBytes.data(), payloadBytes.size(),
+                     MSG_WAITALL);
+            if (payloadRead != static_cast<ssize_t>(payloadBytes.size())) {
+                closeSocket(fds[0]);
+                return false;
+            }
+            rawResponse.insert(rawResponse.end(), payloadBytes.begin(),
+                               payloadBytes.end());
+        }
+
+        closeSocket(fds[0]);
+        return AgentMessage::deserialize(rawResponse.data(), rawResponse.size(),
+                                         response);
+    };
+
+    AgentMessage firstResponse;
+    ASSERT_TRUE(sendOnce(firstResponse));
+    std::string firstPlaintext;
+    ASSERT_TRUE(decryptSecureWirePayload(firstResponse.payload, "shared-token",
+                                         firstPlaintext));
+    ASSERT_EQ("OK:Registered successfully", firstPlaintext);
+
+    AgentMessage secondResponse;
+    ASSERT_TRUE(sendOnce(secondResponse));
+    std::string secondPlaintext;
+    ASSERT_TRUE(decryptSecureWirePayload(secondResponse.payload, "shared-token",
+                                         secondPlaintext));
+    ASSERT_EQ("ERR:Replay detected", secondPlaintext);
+
+    return true;
+}
+
 // ============================================
 // ClusterManager 基本测试
 // ============================================
@@ -350,6 +532,28 @@ TEST(cluster_manager_reverse_tunnel_options_invalid_fallback, "集群管理") {
     ASSERT_EQ(38199, endPort);
     ASSERT_EQ(3, retries);
     ASSERT_EQ(7000, timeoutMs);
+
+    return true;
+}
+
+TEST(cluster_manager_forward_runtime_options, "集群管理") {
+    ClusterManager manager;
+    manager.setForwardRuntimeOptions(12, 900);
+
+    auto [threads, idleTimeoutSeconds] = manager.getForwardRuntimeOptions();
+    ASSERT_EQ(12, threads);
+    ASSERT_EQ(900, idleTimeoutSeconds);
+
+    return true;
+}
+
+TEST(cluster_manager_forward_runtime_options_invalid_fallback, "集群管理") {
+    ClusterManager manager;
+    manager.setForwardRuntimeOptions(0, -1);
+
+    auto [threads, idleTimeoutSeconds] = manager.getForwardRuntimeOptions();
+    ASSERT_EQ(4, threads);
+    ASSERT_EQ(300, idleTimeoutSeconds);
 
     return true;
 }

@@ -74,8 +74,10 @@ AssetInfo AssetInfo::fromAgentInfo(const AgentInfo& agent) {
 
 bool UserPermission::canAccess(const std::string& assetId, const std::string& hostname) const {
     // 检查是否被拒绝
-    if (std::find(deniedAssets.begin(), deniedAssets.end(), assetId) != deniedAssets.end()) {
-        return false;
+    for (const auto& denied : deniedAssets) {
+        if (denied == assetId || denied == hostname) {
+            return false;
+        }
     }
     
     // 检查是否允许所有

@@ -35,9 +35,13 @@ TEST(config_load_valid_file, "配置管理") {
     file << "reverse_tunnel_port_end = 42010\n";
     file << "reverse_tunnel_retries = 5\n";
     file << "reverse_tunnel_accept_timeout_ms = 9000\n";
+    file << "forward_task_threads = 12\n";
+    file << "bridge_idle_timeout_seconds = 900\n";
     file << "\n";
     file << "[security]\n";
     file << "users_file = /tmp/test_users.conf\n";
+    file << "target_known_hosts_file = /tmp/test_target_known_hosts\n";
+    file << "target_host_key_trust_on_first_use = false\n";
     file.close();
     
     // 创建空的用户文件，避免创建默认用户
@@ -65,6 +69,11 @@ TEST(config_load_valid_file, "配置管理") {
     ASSERT_EQ(42010, config.getServerConfig().cluster.reverseTunnelPortEnd);
     ASSERT_EQ(5, config.getServerConfig().cluster.reverseTunnelRetries);
     ASSERT_EQ(9000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
+    ASSERT_EQ(12, config.getServerConfig().cluster.forwardTaskThreads);
+    ASSERT_EQ(900, config.getServerConfig().cluster.bridgeIdleTimeoutSeconds);
+    ASSERT_EQ("/tmp/test_target_known_hosts",
+              config.getServerConfig().security.targetKnownHostsFile);
+    ASSERT_FALSE(config.getServerConfig().security.targetHostKeyTrustOnFirstUse);
     
     return true;
 }
@@ -109,9 +118,14 @@ TEST(config_default_values, "配置管理") {
     ASSERT_EQ(38199, config.getServerConfig().cluster.reverseTunnelPortEnd);
     ASSERT_EQ(3, config.getServerConfig().cluster.reverseTunnelRetries);
     ASSERT_EQ(7000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
+    ASSERT_EQ(4, config.getServerConfig().cluster.forwardTaskThreads);
+    ASSERT_EQ(300, config.getServerConfig().cluster.bridgeIdleTimeoutSeconds);
     ASSERT_EQ("info", config.getServerConfig().logging.level);
     ASSERT_TRUE(config.getServerConfig().logging.sessionRecording);
     ASSERT_EQ(0, config.getServerConfig().security.maxConnectionsPerMinute);
+    ASSERT_EQ("/var/lib/ssh_jump/target_known_hosts",
+              config.getServerConfig().security.targetKnownHostsFile);
+    ASSERT_TRUE(config.getServerConfig().security.targetHostKeyTrustOnFirstUse);
     
     return true;
 }
@@ -214,6 +228,8 @@ TEST(config_security_settings, "配置管理") {
     file << "allow_sftp = false\n";
     file << "max_connections_per_minute = 120\n";
     file << "users_file = /tmp/test_users_security.conf\n";
+    file << "target_known_hosts_file = /tmp/security_known_hosts\n";
+    file << "target_host_key_trust_on_first_use = true\n";
     file.close();
     
     std::ofstream userFile("/tmp/test_users_security.conf");
@@ -231,6 +247,9 @@ TEST(config_security_settings, "配置管理") {
     ASSERT_FALSE(config.getServerConfig().security.allowPortForwarding);
     ASSERT_FALSE(config.getServerConfig().security.allowSftp);
     ASSERT_EQ(120, config.getServerConfig().security.maxConnectionsPerMinute);
+    ASSERT_EQ("/tmp/security_known_hosts",
+              config.getServerConfig().security.targetKnownHostsFile);
+    ASSERT_TRUE(config.getServerConfig().security.targetHostKeyTrustOnFirstUse);
     
     return true;
 }
@@ -268,6 +287,8 @@ TEST(config_cluster_reverse_tunnel_validate, "配置管理") {
     file << "reverse_tunnel_port_end = 45020\n";
     file << "reverse_tunnel_retries = 4\n";
     file << "reverse_tunnel_accept_timeout_ms = 12000\n";
+    file << "forward_task_threads = 16\n";
+    file << "bridge_idle_timeout_seconds = 1200\n";
     file << "[security]\n";
     file << "users_file = " << userFile << "\n";
     file.close();
@@ -287,6 +308,8 @@ TEST(config_cluster_reverse_tunnel_validate, "配置管理") {
     ASSERT_EQ(45020, config.getServerConfig().cluster.reverseTunnelPortEnd);
     ASSERT_EQ(4, config.getServerConfig().cluster.reverseTunnelRetries);
     ASSERT_EQ(12000, config.getServerConfig().cluster.reverseTunnelAcceptTimeoutMs);
+    ASSERT_EQ(16, config.getServerConfig().cluster.forwardTaskThreads);
+    ASSERT_EQ(1200, config.getServerConfig().cluster.bridgeIdleTimeoutSeconds);
     ASSERT_TRUE(config.validate());
     return true;
 }
@@ -317,6 +340,33 @@ TEST(config_cluster_reverse_tunnel_invalid_range, "配置管理") {
     return true;
 }
 
+TEST(config_cluster_forward_runtime_invalid, "配置管理") {
+    const char* testFile = "/tmp/test_config_cluster_forward_runtime_invalid.conf";
+    const char* userFile = "/tmp/test_users_cluster_forward_runtime_invalid.conf";
+
+    std::ofstream file(testFile);
+    file << "[cluster]\n";
+    file << "forward_task_threads = 0\n";
+    file << "bridge_idle_timeout_seconds = -5\n";
+    file << "[security]\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_FALSE(config.validate());
+    return true;
+}
+
 TEST(config_security_rate_limit_invalid, "配置管理") {
     const char* testFile = "/tmp/test_config_security_rate_limit_invalid.conf";
     const char* userFile = "/tmp/test_users_security_rate_limit_invalid.conf";
@@ -324,6 +374,31 @@ TEST(config_security_rate_limit_invalid, "配置管理") {
     std::ofstream file(testFile);
     file << "[security]\n";
     file << "max_connections_per_minute = -1\n";
+    file << "users_file = " << userFile << "\n";
+    file.close();
+
+    std::ofstream users(userFile);
+    users << "admin = hash123\n";
+    users.close();
+
+    ConfigManager config;
+    bool loaded = config.loadFromFile(testFile);
+
+    std::remove(testFile);
+    std::remove(userFile);
+
+    ASSERT_TRUE(loaded);
+    ASSERT_FALSE(config.validate());
+    return true;
+}
+
+TEST(config_security_target_known_hosts_invalid, "配置管理") {
+    const char* testFile = "/tmp/test_config_security_target_known_hosts_invalid.conf";
+    const char* userFile = "/tmp/test_users_security_target_known_hosts_invalid.conf";
+
+    std::ofstream file(testFile);
+    file << "[security]\n";
+    file << "target_known_hosts_file = \n";
     file << "users_file = " << userFile << "\n";
     file.close();
 
